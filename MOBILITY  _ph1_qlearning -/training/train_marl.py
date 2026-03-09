@@ -55,6 +55,8 @@ def train_gnn_marl():
         
         ep_reward = 0
         
+        step_pbar = tqdm(total=env.max_steps, desc=f"Ep {ep+1} Steps", leave=False, unit="step")
+        
         while env.agents:
             epsilon = epsilon_end + (epsilon_start - epsilon_end) * \
                 math.exp(-1. * steps_done / epsilon_decay)
@@ -122,6 +124,9 @@ def train_gnn_marl():
             if steps_done % 1000 == 0:
                 target_net.load_state_dict(policy_net.state_dict())
                 
+            step_pbar.update(1)
+            
+        step_pbar.close()
         episode_rewards.append(ep_reward)
         if ep % 5 == 0:
             pbar.set_postfix({"Avg Reward": f"{ep_reward:.2f}", "Epsilon": f"{epsilon:.3f}"})
