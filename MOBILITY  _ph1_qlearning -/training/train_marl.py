@@ -34,7 +34,7 @@ def train_gnn_marl():
     epsilon_end = 0.05
     epsilon_decay = 5000
     
-    episodes = 200
+    episodes = 5000
     steps_done = 0
     
     episode_rewards = []

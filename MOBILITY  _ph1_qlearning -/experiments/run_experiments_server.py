@@ -26,7 +26,7 @@ from configs.rl_config import RLConfig
 MAC_NAMES = {0: "TDMA", 1: "CSMA_CA"}
 # In server environments, we typically want more training steps.
 # You can override this dynamically.
-RL_TRAINING_TIMESTEPS = 1000  
+RL_TRAINING_TIMESTEPS = 50000  
 
 # =====================================================================
 # Utility Functions
