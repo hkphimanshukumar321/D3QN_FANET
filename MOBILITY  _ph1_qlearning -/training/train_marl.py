@@ -16,6 +16,8 @@ from configs import config as params
 from envs.marl_mac_env import MARLMacEnv
 from algorithms.rl.gnn_marl import MAGAT_D3QN_QNetwork
 
+from tqdm import tqdm
+
 def train_gnn_marl():
     env = MARLMacEnv()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -44,7 +46,10 @@ def train_gnn_marl():
     print(f"Starting Multi-Agent GNN Training... Device: {device}")
     print("=" * 60)
     
-    for ep in range(episodes):
+    # Initialize the Progress Bar
+    pbar = tqdm(range(episodes), desc="Training MARL-GNN", unit="ep")
+    
+    for ep in pbar:
         obs, _ = env.reset()
         x, edge_index = env.get_global_graph_state()
         
@@ -119,7 +124,7 @@ def train_gnn_marl():
                 
         episode_rewards.append(ep_reward)
         if ep % 5 == 0:
-            print(f"Episode {ep:3d}/{episodes} | Avg Shared Reward: {ep_reward:7.2f} | Epsilon: {epsilon:.3f}")
+            pbar.set_postfix({"Avg Reward": f"{ep_reward:.2f}", "Epsilon": f"{epsilon:.3f}"})
         
     os.makedirs(os.path.join(project_root, "results", "checkpoints"), exist_ok=True)
     model_path = os.path.join(project_root, "results", "checkpoints", "gnn_marl_model.pth")
