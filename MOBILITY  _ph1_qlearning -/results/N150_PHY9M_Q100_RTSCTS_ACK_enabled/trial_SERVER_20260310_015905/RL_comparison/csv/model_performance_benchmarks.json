@@ -1,0 +1,27 @@
+{
+    "MCA_D3QN": {
+        "model_size_kb": 1960.09,
+        "ram_footprint_mb": 8.0,
+        "inference_latency_us": 1477.43
+    },
+    "DQN": {
+        "model_size_kb": 180.23,
+        "ram_footprint_mb": 2.23,
+        "inference_latency_us": 493.6
+    },
+    "PPO": {
+        "model_size_kb": 258.78,
+        "ram_footprint_mb": 2.0,
+        "inference_latency_us": 737.77
+    },
+    "A2C": {
+        "model_size_kb": 180.17,
+        "ram_footprint_mb": 0.26,
+        "inference_latency_us": 656.42
+    },
+    "TABULAR": {
+        "model_size_kb": 0.31,
+        "ram_footprint_mb": 0,
+        "inference_latency_us": 58.95
+    }
+}
