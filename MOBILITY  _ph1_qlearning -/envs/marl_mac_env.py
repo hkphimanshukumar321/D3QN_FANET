@@ -92,24 +92,25 @@ class MARLMacEnv(ParallelEnv):
         
     def get_global_graph_state(self):
         """
-        Extracts the required topological data for PyTorch Geometric GNNs.
-        Returns the Node Feature Matrix (X) and Edge Index (A).
+        Extracts the topological data for PyTorch GNNs using pure Vectorized Matrix Math.
         """
         obs_dict = self._get_obs()
         x = np.stack([obs_dict[a] for a in self.possible_agents])
         
         pos = self.mobility_model.positions
         R = params.COMM_RANGE_R
-        edges = []
-        for i in range(self.N):
-            for j in range(self.N):
-                if i != j:
-                    d = np.linalg.norm(pos[i] - pos[j])
-                    if d <= R:
-                        edges.append([i, j])
-                        
-        if len(edges) > 0:
-            edge_index = np.array(edges, dtype=np.int64).T
+        
+        # Optimize O(N^2) edge generation using Vectorized Broadcasting instead of Python For-loops
+        # Expanding dims to create paired distance matrix natively in C++ via Numpy
+        diff = pos[:, np.newaxis, :] - pos[np.newaxis, :, :] 
+        dist_sq = np.sum(diff ** 2, axis=-1)
+        
+        # Boolean mask representing all connected nodes
+        valid_edges = (dist_sq <= R**2) & ~np.eye(self.N, dtype=bool) 
+        row, col = np.where(valid_edges)
+        
+        if len(row) > 0:
+            edge_index = np.stack([row, col], axis=0).astype(np.int64)
         else:
             edge_index = np.empty((2, 0), dtype=np.int64)
             
