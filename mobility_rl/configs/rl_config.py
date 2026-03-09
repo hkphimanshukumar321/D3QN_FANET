@@ -1,0 +1,44 @@
+# rl_config.py
+# Centralized configuration for the RL Environment and Training
+
+import os
+
+class RLConfig:
+    # ----------------------------------------------------
+    # Environment Bounds (for Normalization)
+    # ----------------------------------------------------
+    MAX_THROUGHPUT_MBPS = 5.0      # Equal to PHY_RATE_BPS
+    MAX_DELAY_MS = 200.0           # Clipping bound for delay
+    MAX_QUEUE_OCCUPANCY = 100.0    # Equal to QMAX
+    MAX_BACKLOG = 500.0            # Approx max backlog scale
+    MAX_SPEED_MPS = 45.0           # Max V_MAX
+    TRAIN_SIM_TIME_S = 10.0        # Duration of one training episode
+    DECISION_INTERVAL_S = 1.0      # Time between RL actions (seconds)
+    
+    # ----------------------------------------------------
+    # Observation Features
+    # ----------------------------------------------------
+    NUM_SCALAR_FEATURES = 14
+    HISTORY_WINDOW_STEPS = 5       # Size of the temporal window
+    
+    # ----------------------------------------------------
+    # Reward Weights (MCA-D3QN)
+    # Rt = w_T*T^ - w_D*D^ - w_F*F^ - w_J*J^
+    # ----------------------------------------------------
+    REWARD_W_THROUGHPUT = 1.0
+    REWARD_W_DELAY = 1.0
+    REWARD_W_FAILURES = 0.5
+    REWARD_W_JITTER = 0.2
+    
+    # ----------------------------------------------------
+    # Training Hyperparameters Default 
+    # ----------------------------------------------------
+    TOTAL_TIMESTEPS = 1_000
+    N_ENVS = 4
+    SEED = 42
+
+    @staticmethod
+    def get_results_dir():
+        base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "results"))
+        os.makedirs(base, exist_ok=True)
+        return base
