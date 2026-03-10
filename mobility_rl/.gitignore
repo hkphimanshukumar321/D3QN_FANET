@@ -177,3 +177,6 @@ errors.txt
 run_out.txt
 test_out.txt
 test_run.py
+
+# Model Checkpoints (Heavy Binaries)
+results/checkpoints/
