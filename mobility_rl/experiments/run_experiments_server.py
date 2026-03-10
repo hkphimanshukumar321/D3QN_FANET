@@ -401,10 +401,12 @@ def run_experiment_server():
     log_print(f" SERVER-GRADE EXPERIMENT RUNNER (Multiprocessing & Telemetry)")
     log_print("==========================================================")
     
+    # Move hardware check after potential multiprocessing initialization if needed,
+    # or just keep it simple. We'll move the torch import inside to be safe.
     import torch
     num_cpus = os.cpu_count()
-    has_gpu = torch.cuda.is_available()
-    log_print(f"Hardware Scan: {num_cpus} CPU Cores Detected | GPU Available: {has_gpu}")
+    # has_gpu = torch.cuda.is_available() # Avoid calling this here if possible
+    log_print(f"Hardware Scan: {num_cpus} CPU Cores Detected")
     
     cfg = Config() # Loads defaults from params natively in base script architecture
 
@@ -448,6 +450,10 @@ def run_experiment_server():
     log_print("Experiment Runner Terminated Successfully.")
 
 if __name__ == '__main__':
-    # Standard protection for python multiprocessing on Windows
-    # Prevents infinite recursive fork loops.
+    # Standard protection for python multiprocessing on Windows/Linux
+    # Use 'spawn' to avoid CUDA re-initialization errors in forked subprocesses
+    try:
+        multiprocessing.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass
     run_experiment_server()
