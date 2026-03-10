@@ -348,8 +348,8 @@ def load_and_benchmark_models(log_print):
     if getattr(params, "RUN_TABULAR_QLEARNING", True):
         _bench_model("TABULAR", lambda: TabularQLearning(), os.path.join(cp_dir, "tabular_q_model.json"))
 
-    # if getattr(params, "RUN_MARL_GNN", True):
-    #     _bench_model("MARL_GNN", None, os.path.join(cp_dir, "gnn_marl_model.pth"))
+    if getattr(params, "RUN_MARL_GNN", True):
+        _bench_model("MARL_GNN", None, os.path.join(cp_dir, "gnn_marl_model.pth"))
 
     return models, benchmarks
 
