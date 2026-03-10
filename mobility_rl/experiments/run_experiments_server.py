@@ -118,18 +118,33 @@ def run_baseline_simulations(cfg, traffic_pps_list, sim_time_s, N, seed, log_pri
 # Phase 2: Multiprocessed RL Training
 # =====================================================================
 from stable_baselines3.common.callbacks import BaseCallback
+from tqdm import tqdm
 
-class RewardLoggerCallback(BaseCallback):
-    def __init__(self, verbose=0):
+class TqdmRewardLoggerCallback(BaseCallback):
+    def __init__(self, algo_name, total_timesteps, position=0, verbose=0):
         super().__init__(verbose)
         self.episode_rewards = []
         self.steps = []
+        self.algo_name = algo_name
+        self.total_timesteps = total_timesteps
+        self.position = position
+        self.pbar = None
+
+    def _on_training_start(self):
+        self.pbar = tqdm(total=self.total_timesteps, desc=f"Training {self.algo_name.upper()}", position=self.position, leave=True, unit="step")
+
     def _on_step(self) -> bool:
+        self.pbar.update(1)
         if "episode" in self.locals.get("infos", [{}])[0]:
             ep_info = self.locals["infos"][0]["episode"]
             self.episode_rewards.append(ep_info["r"])
             self.steps.append(self.num_timesteps)
+            self.pbar.set_postfix({"Ep Reward": f"{ep_info['r']:.2f}"})
         return True
+
+    def _on_training_end(self):
+        if self.pbar:
+            self.pbar.close()
 
 def train_single_model(kwargs):
     """
@@ -140,6 +155,7 @@ def train_single_model(kwargs):
     cp_dir = kwargs['cp_dir']
     rl_out_dir = kwargs['rl_out_dir']
     seed = kwargs['seed']
+    position = kwargs['position']
     
     import pandas as pd
     from envs.adaptive_mac_env import AdaptiveMacEnv
@@ -159,17 +175,25 @@ def train_single_model(kwargs):
         tab_rewards = []
         tab_steps = []
         episode_reward = 0.0
+        
+        pbar = tqdm(total=timesteps, desc=f"Training {algo_name.upper()}", position=position, leave=True, unit="step")
+        
         for step in range(timesteps):
             action, _ = model.predict(obs, deterministic=False)
             next_obs, reward, terminated, truncated, info = env.step(action)
             model.learn(obs, action, reward, next_obs, done=(terminated or truncated))
             obs = next_obs
             episode_reward += reward
+            pbar.update(1)
+            
             if terminated or truncated:
                 obs, info = env.reset()
                 tab_rewards.append(episode_reward)
                 tab_steps.append(step + 1)
+                pbar.set_postfix({"Ep Reward": f"{episode_reward:.2f}"})
                 episode_reward = 0.0
+                
+        pbar.close()
         model.save(tab_path)
         if tab_steps:
             pd.DataFrame({"step": tab_steps, "reward": tab_rewards}).to_csv(
@@ -189,8 +213,8 @@ def train_single_model(kwargs):
         env = Monitor(AdaptiveMacEnv())
         vec_env = DummyVecEnv([lambda: env])
         model = create_sb3_baseline(vec_env, algo_name=algo_name, seed=seed)
-        cb = RewardLoggerCallback()
-        model.learn(total_timesteps=timesteps, progress_bar=False, callback=cb)  # disable TQDM in workers
+        cb = TqdmRewardLoggerCallback(algo_name, timesteps, position)
+        model.learn(total_timesteps=timesteps, progress_bar=False, callback=cb)  # disable internal TQDM
         model.save(save_path)
         
         if cb.steps:
@@ -211,7 +235,7 @@ def train_single_model(kwargs):
         env = Monitor(AdaptiveMacEnv())
         vec_env = DummyVecEnv([lambda: env])
         model = create_mca_d3qn(vec_env, seed=seed)
-        cb = RewardLoggerCallback()
+        cb = TqdmRewardLoggerCallback(algo_name, timesteps, position)
         model.learn(total_timesteps=timesteps, progress_bar=False, callback=cb)
         model.save(mca_path)
         
@@ -234,8 +258,8 @@ def execute_multiprocess_training(rl_out_dir, timesteps, log_print):
     if getattr(params, "RUN_CUSTOM_RL", True): tasks.append('mca_d3qn')
     
     kwargs_list = [
-        {'algo_name': task, 'timesteps': timesteps, 'cp_dir': cp_dir, 'rl_out_dir': rl_out_dir, 'seed': params.SEED}
-        for task in tasks
+        {'algo_name': task, 'timesteps': timesteps, 'cp_dir': cp_dir, 'rl_out_dir': rl_out_dir, 'seed': params.SEED, 'position': i}
+        for i, task in enumerate(tasks)
     ]
     
     cpu_cores = min(os.cpu_count() or 1, len(tasks))

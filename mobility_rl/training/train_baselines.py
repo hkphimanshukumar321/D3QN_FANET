@@ -37,23 +37,24 @@ def train_tabular_baseline():
     model = TabularQLearning(seed=RLConfig.SEED)
     
     obs, info = env.reset(seed=RLConfig.SEED)
+    from tqdm import tqdm
     
-    # Train using the gym step loop
+    pbar = tqdm(total=RLConfig.TOTAL_TIMESTEPS, desc="Training TABULAR", unit="step")
     for step in range(RLConfig.TOTAL_TIMESTEPS):
         action, _ = model.predict(obs, deterministic=False)
         next_obs, reward, terminated, truncated, info = env.step(action)
         
-        # Q-learning update
         model.learn(obs, action, reward, next_obs, done=(terminated or truncated))
-        
         obs = next_obs
+        pbar.update(1)
         
         if terminated or truncated:
             obs, info = env.reset()
             
-        if (step+1) % 5000 == 0:
-            print(f"Tabular Q-Learning Step: {step+1}/{RLConfig.TOTAL_TIMESTEPS} - Epsilon: {model.epsilon:.4f}")
-
+        if (step+1) % 1000 == 0:
+            pbar.set_postfix({"Epsilon": f"{model.epsilon:.4f}"})
+            
+    pbar.close()
     save_path = os.path.join(RLConfig.get_results_dir(), "checkpoints", "tabular_q_model.json")
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     model.save(save_path)
