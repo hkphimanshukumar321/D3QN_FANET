@@ -2,89 +2,77 @@ import torch
 import torch.nn as nn
 from stable_baselines3 import DQN
 from stable_baselines3.dqn.policies import MultiInputPolicy
+from stable_baselines3.common.policies import BaseModel
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from algorithms.rl.features_extractor import MCAFeaturesExtractor
 
 
-class DuelingQNetwork(nn.Module):
+class DuelingQNetwork(BaseModel):
     """
-    Proper Dueling Q-Network head to replace SB3's default flat MLP.
-
-    Splits the feature vector from MCAFeaturesExtractor into:
-        V(s)    — scalar state value
-        A(s, a) — per-action advantage
-
-    Recombined as: Q(s,a) = V(s) + ( A(s,a) - mean_a[ A(s,a) ] )
-
-    This is the only thing missing from the original MCA-D3QN — everything
-    else in create_mca_d3qn() is unchanged.
-
-    Args:
-        features_dim : output dim of MCAFeaturesExtractor (256).
-        n_actions    : number of discrete actions in the environment.
-        hidden_dim   : width of the V and A stream hidden layers.
+    Proper Dueling Q-Network head that inherits from BaseModel to ensure 
+    compatibility with SB3's internal feature extraction and target network updates.
     """
 
-    def __init__(self, features_dim: int, n_actions: int, hidden_dim: int = 128):
-        super(DuelingQNetwork, self).__init__()
+    def __init__(
+        self,
+        observation_space,
+        action_space,
+        features_extractor: nn.Module,
+        features_dim: int,
+        net_arch=None,
+        activation_fn=nn.ReLU,
+        normalize_images: bool = True,
+        hidden_dim: int = 128,
+    ):
+        super().__init__(
+            observation_space,
+            action_space,
+            features_extractor=features_extractor,
+            normalize_images=normalize_images,
+        )
+        self.features_dim = features_dim
+        n_actions = int(action_space.n)
 
-        # Value stream V(s) — how good is this state overall?
+        # Value stream V(s)
         self.value_stream = nn.Sequential(
             nn.Linear(features_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, 1),
         )
 
-        # Advantage stream A(s, a) — how much better is each action relatively?
+        # Advantage stream A(s, a)
         self.advantage_stream = nn.Sequential(
             nn.Linear(features_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, n_actions),
         )
 
-    def forward(self, features: torch.Tensor) -> torch.Tensor:
-        values     = self.value_stream(features)        # (batch, 1)
-        advantages = self.advantage_stream(features)    # (batch, n_actions)
-        # Mean-subtracted recombination — standard Dueling formula
-        q_values = values + (advantages - advantages.mean(dim=1, keepdim=True))
-        return q_values                                 # (batch, n_actions)
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        """
+        Predict the q-values by extracting features first.
+        """
+        features = self.extract_features(obs, self.features_extractor)
+        values = self.value_stream(features)
+        advantages = self.advantage_stream(features)
+        # Mean-subtracted recombination
+        return values + (advantages - advantages.mean(dim=1, keepdim=True))
 
-    def set_training_mode(self, mode: bool) -> None:
-        """
-        Put the network in training or evaluation mode.
-        Required by newer versions of Stable Baselines 3.
-        """
-        self.train(mode)
+    def _predict(self, observation: torch.Tensor, deterministic: bool = True) -> torch.Tensor:
+        q_values = self(observation)
+        return q_values.argmax(dim=1).reshape(-1)
 
 
 class DuelingMultiInputPolicy(MultiInputPolicy):
     """
-    Thin SB3 policy subclass that swaps the default flat Q-network
-    for our DuelingQNetwork — everything else (optimizer, feature
-    extractor wiring, double-DQN logic) stays exactly as SB3 provides.
+    Custom policy that uses our DuelingQNetwork.
     """
 
     def make_q_net(self) -> DuelingQNetwork:
-        # net_arch is passed via policy_kwargs but unused here —
-        # the Dueling streams use hidden_dim=128 matching the original net_arch.
-        # SB3 doesn't assign self.features_dim on this class, so we read it directly from the extractor.
-        features_dim = getattr(self, "features_dim", getattr(self.features_extractor, "features_dim", 256))
-        
-        return DuelingQNetwork(
-            features_dim=features_dim,
-            n_actions=self.action_space.n,
-            hidden_dim=128,
-        ).to(self.device)
-
-    def _predict(self, observation: torch.Tensor, deterministic: bool = True) -> torch.Tensor:
-        """
-        Get the action according to the policy for a given observation.
-        Extracts features using MCAFeaturesExtractor before feeding to the Q-Network.
-        """
-        features = self.extract_features(observation)
-        q_values = self.q_net(features)
-        action = q_values.argmax(dim=1).reshape(-1)
-        return action
+        # Replicate SB3's logic to create/clonse the features extractor
+        net_args = self._update_features_extractor(self.net_args, features_extractor=None)
+        # Add our custom hidden_dim for the Dueling streams
+        net_args["hidden_dim"] = 128
+        return DuelingQNetwork(**net_args).to(self.device)
 
 
 def create_mca_d3qn(env, learning_rate=1e-3, buffer_size=100000,
