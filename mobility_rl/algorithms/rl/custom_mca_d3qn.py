@@ -49,6 +49,13 @@ class DuelingQNetwork(nn.Module):
         q_values = values + (advantages - advantages.mean(dim=1, keepdim=True))
         return q_values                                 # (batch, n_actions)
 
+    def set_training_mode(self, mode: bool) -> None:
+        """
+        Put the network in training or evaluation mode.
+        Required by newer versions of Stable Baselines 3.
+        """
+        self.train(mode)
+
 
 class DuelingMultiInputPolicy(MultiInputPolicy):
     """
