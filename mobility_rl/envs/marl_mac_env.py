@@ -234,7 +234,7 @@ class MARLMacEnv(ParallelEnv):
         chosen_mac = 1 if vote_csma > vote_tdma else 0
 
         # 3. MAC simulation
-        cfg = Config(N=self.N, sim_time_s=1.0, QMAX=params.QMAX,
+        cfg = Config(N=self.N, sim_time_s=0.1, QMAX=params.QMAX,
                      tdma_guard_time_s=params.TDMA_GUARD_TIME_S)
         log = Logger()
         load = getattr(params, 'SWEEP_MAX_PPS', 400)
@@ -245,7 +245,7 @@ class MARLMacEnv(ParallelEnv):
             simulate_csma_ca(cfg, load, log)
 
         # 4. Cooperative reward
-        throughput = log.get_throughput_bps(1.0) / 1e6
+        throughput = log.get_throughput_bps(0.1) / 1e6
         drops = log.pkts_dropped_qfull + log.pkts_dropped_mac
         collisions = log.collision_events
         delay_ms = log.get_avg_end_to_end_delay_s() * 1000

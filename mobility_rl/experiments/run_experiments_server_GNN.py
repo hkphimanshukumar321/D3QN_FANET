@@ -127,6 +127,8 @@ def train_single_marl_model(kwargs):
     N = params.N
     obs_dim = MARLConfig.OBS_DIM
     num_actions = MARLConfig.NUM_ACTIONS
+    import torch
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     common_kwargs = dict(
         n_agents=N, obs_dim=obs_dim, num_actions=num_actions,
@@ -135,6 +137,7 @@ def train_single_marl_model(kwargs):
         eps_end=MARLConfig.EPSILON_END, eps_decay=MARLConfig.EPSILON_DECAY,
         target_update=MARLConfig.TARGET_UPDATE_FREQ,
         replay_size=MARLConfig.REPLAY_SIZE, batch_size=MARLConfig.BATCH_SIZE,
+        device=device,
     )
     
     if algo_name == 'iql':
