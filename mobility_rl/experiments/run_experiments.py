@@ -34,9 +34,9 @@ def generate_baseline_plots(df, out_dir, N, payload_bytes, phy_rate_bps, QMAX,
     load = df["Offered_Load_pps"]
     subtitle = f"N={N}, PHY={phy_rate_bps/1e6:.0f} Mbps, Q={QMAX}"
 
-    markers = ["o", "s", "^"]
-    colors = ["tab:blue", "tab:orange", "tab:green"]
-    protocols = ["ALOHA", "TDMA", "CSMA"]
+    markers = ["s", "^"]
+    colors = ["tab:orange", "tab:green"]
+    protocols = ["TDMA", "CSMA"]
 
     # --- Throughput ---
     plt.figure(figsize=(10, 6), dpi=150)
@@ -213,7 +213,7 @@ def generate_aggregated_rl_plots(all_results, baseline_df, q_df, rl_out_dir, log
     # --- Combined Throughput: Baselines + RL ---
     plt.figure(figsize=(12, 7), dpi=150)
     # Baseline curves
-    for proto, style in [("ALOHA", "--"), ("TDMA", "--"), ("CSMA", "--")]:
+    for proto, style in [("TDMA", "--"), ("CSMA", "--")]:
         col = f"{proto}_Throughput_Mbps"
         if col in baseline_df.columns:
             plt.plot(load, baseline_df[col], linestyle=style, linewidth=1.5,

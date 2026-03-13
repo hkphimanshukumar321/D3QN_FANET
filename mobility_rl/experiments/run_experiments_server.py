@@ -79,51 +79,26 @@ def estimate_ram_footprint():
 # =====================================================================
 def run_baseline_simulations(cfg, traffic_pps_list, sim_time_s, N, seed, log_print):
     results = []
-    q_log_aloha = []
-    q_log_tdma = []
-    q_log_csma = []
 
     for idx, pps in enumerate(traffic_pps_list):
         log_print(f"  [Baseline] Testing load {pps} pps ({idx+1}/{len(traffic_pps_list)})")
         
-        log_aloha = Logger(load_pps=pps)
-        cfg.seed = seed + idx
-        simulate_slotted_aloha(cfg, pps, log_aloha)
-        q_log_aloha.extend(log_aloha.q_log)
-        
         log_tdma = Logger(load_pps=pps)
         cfg.seed = seed + idx
         simulate_tdma(cfg, pps, log_tdma)
-        q_log_tdma.extend(log_tdma.q_log)
         
         log_csma = Logger(load_pps=pps)
         cfg.seed = seed + idx
         simulate_csma_ca(cfg, pps, log_csma)
-        q_log_csma.extend(log_csma.q_log)
         
         results.append({
             'Offered_Load_pps': pps,
-            'ALOHA_Throughput_Mbps': log_aloha.get_throughput_bps(sim_time_s) / 1e6,
             'TDMA_Throughput_Mbps': log_tdma.get_throughput_bps(sim_time_s) / 1e6,
             'CSMA_Throughput_Mbps': log_csma.get_throughput_bps(sim_time_s) / 1e6,
-            
-            'ALOHA_Delay_s': log_aloha.get_avg_end_to_end_delay_s(),
             'TDMA_Delay_s': log_tdma.get_avg_end_to_end_delay_s(),
             'CSMA_Delay_s': log_csma.get_avg_end_to_end_delay_s(),
-            
-            'ALOHA_Drops': log_aloha.pkts_dropped_qfull + log_aloha.pkts_dropped_mac,
             'TDMA_Drops': log_tdma.pkts_dropped_qfull + log_tdma.pkts_dropped_mac,
             'CSMA_Drops': log_csma.pkts_dropped_qfull + log_csma.pkts_dropped_mac,
-            
-            'ALOHA_Q_len': 0,
-            'TDMA_Q_len': 0,
-            'CSMA_Q_len': 0,
-            
-            'ALOHA_Util': 0.0,
-            'TDMA_Util': 0.0,
-            'CSMA_Util': 0.0,
-            
-            'ALOHA_Collisions': log_aloha.collision_events,
             'TDMA_Collisions': log_tdma.collision_events,
             'CSMA_Collisions': log_csma.collision_events,
         })
