@@ -60,8 +60,11 @@ class DuelingMultiInputPolicy(MultiInputPolicy):
     def make_q_net(self) -> DuelingQNetwork:
         # net_arch is passed via policy_kwargs but unused here —
         # the Dueling streams use hidden_dim=128 matching the original net_arch.
+        # SB3 doesn't assign self.features_dim on this class, so we read it directly from the extractor.
+        features_dim = getattr(self, "features_dim", getattr(self.features_extractor, "features_dim", 256))
+        
         return DuelingQNetwork(
-            features_dim=self.features_dim,
+            features_dim=features_dim,
             n_actions=self.action_space.n,
             hidden_dim=128,
         ).to(self.device)

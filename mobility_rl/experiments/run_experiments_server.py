@@ -26,8 +26,8 @@ from experiments.run_experiments import generate_baseline_plots
 # =====================================================================
 MAC_NAMES = {0: "TDMA", 1: "CSMA_CA"}
 # In server environments, we typically want more training steps.
-# You can override this dynamically.
-RL_TRAINING_TIMESTEPS = 50000  
+# Using the configured timesteps instead of hardcoded 50000.
+RL_TRAINING_TIMESTEPS = RLConfig.TRAINING_TIMESTEPS  
 
 # =====================================================================
 # Utility Functions

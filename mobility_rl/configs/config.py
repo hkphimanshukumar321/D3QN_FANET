@@ -180,7 +180,7 @@ ENABLE_GPU = True
 GPU_DEVICE_ID = 0
 FORCE_CPU = True
 TRAIN_ON_GPU = True
-EVAL_ON_GPU = False
+EVAL_ON_GPU = True
 ENABLE_RESOURCE_LOGGING = True
 RESULTS_PER_WORKER = True          # If True, parallel workers write safely isolated folders
 
