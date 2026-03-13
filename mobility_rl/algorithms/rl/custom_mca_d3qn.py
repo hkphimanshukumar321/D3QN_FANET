@@ -56,6 +56,16 @@ class DuelingQNetwork(nn.Module):
         """
         self.train(mode)
 
+    def _predict(self, observation: torch.Tensor, deterministic: bool = True) -> torch.Tensor:
+        """
+        Get the action according to the policy for a given observation.
+        Required by SB3 Q-network wrapper.
+        """
+        q_values = self(observation)
+        # Greedy action (argmax over actions)
+        action = q_values.argmax(dim=1).reshape(-1)
+        return action
+
 
 class DuelingMultiInputPolicy(MultiInputPolicy):
     """
