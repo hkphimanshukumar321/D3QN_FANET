@@ -56,16 +56,6 @@ class DuelingQNetwork(nn.Module):
         """
         self.train(mode)
 
-    def _predict(self, observation: torch.Tensor, deterministic: bool = True) -> torch.Tensor:
-        """
-        Get the action according to the policy for a given observation.
-        Required by SB3 Q-network wrapper.
-        """
-        q_values = self(observation)
-        # Greedy action (argmax over actions)
-        action = q_values.argmax(dim=1).reshape(-1)
-        return action
-
 
 class DuelingMultiInputPolicy(MultiInputPolicy):
     """
@@ -85,6 +75,16 @@ class DuelingMultiInputPolicy(MultiInputPolicy):
             n_actions=self.action_space.n,
             hidden_dim=128,
         ).to(self.device)
+
+    def _predict(self, observation: torch.Tensor, deterministic: bool = True) -> torch.Tensor:
+        """
+        Get the action according to the policy for a given observation.
+        Extracts features using MCAFeaturesExtractor before feeding to the Q-Network.
+        """
+        features = self.extract_features(observation)
+        q_values = self.q_net(features)
+        action = q_values.argmax(dim=1).reshape(-1)
+        return action
 
 
 def create_mca_d3qn(env, learning_rate=1e-3, buffer_size=100000,
