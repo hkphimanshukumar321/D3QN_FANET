@@ -8,58 +8,114 @@ import random
 import math
 from collections import deque
 import matplotlib.pyplot as plt
+import pandas as pd
+from tqdm import tqdm
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.insert(0, project_root)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 from configs import config as params
+from configs.marl_config import MARLConfig
 from envs.marl_mac_env import MARLMacEnv
 from algorithms.rl.gnn_marl import MAGAT_D3QN_QNetwork
 
-from tqdm import tqdm
+def train_marl_agent(algo_name, agent_class, save_filename, extra_kwargs=None):
+    """Generic training loop for independent MARL baselines (IQL, VDN, QMIX)."""
+    env = MARLMacEnv()
+    N = params.N
+    obs_dim = MARLConfig.OBS_DIM
+    num_actions = MARLConfig.NUM_ACTIONS
+
+    kwargs = dict(
+        n_agents=N, obs_dim=obs_dim, num_actions=num_actions,
+        hidden_dim=MARLConfig.HIDDEN_DIM, lr=MARLConfig.LR,
+        gamma=MARLConfig.GAMMA, eps_start=MARLConfig.EPSILON_START,
+        eps_end=MARLConfig.EPSILON_END, eps_decay=MARLConfig.EPSILON_DECAY,
+        target_update=MARLConfig.TARGET_UPDATE_FREQ,
+        replay_size=MARLConfig.REPLAY_SIZE, batch_size=MARLConfig.BATCH_SIZE,
+    )
+    if extra_kwargs:
+        kwargs.update(extra_kwargs)
+
+    agent = agent_class(**kwargs)
+    episodes = MARLConfig.EPISODES
+    ep_rewards = []
+    
+    print("=" * 60)
+    print(f"Starting {algo_name} Training...")
+    print("=" * 60)
+
+    pbar = tqdm(range(episodes), desc=f"Training {algo_name}", unit="ep")
+
+    for ep in pbar:
+        obs_dict, _ = env.reset()
+        obs_all = np.stack([obs_dict[a] for a in env.possible_agents])
+
+        ep_reward = 0.0
+        while env.agents:
+            actions_list = agent.select_actions(obs_all)
+            actions_dict = {a: actions_list[i] for i, a in enumerate(env.agents)}
+
+            next_obs_dict, rewards, terminations, truncations, infos = env.step(actions_dict)
+            reward_val = list(rewards.values())[0] if rewards else 0.0
+
+            next_obs_all = np.stack([next_obs_dict[a] for a in env.possible_agents])
+            done = terminations[env.possible_agents[0]] if env.possible_agents[0] in terminations else True
+
+            agent.store(obs_all, actions_list, reward_val, next_obs_all, done)
+            agent.update()
+
+            obs_all = next_obs_all
+            ep_reward += reward_val
+
+        ep_rewards.append(ep_reward)
+        if ep % 10 == 0:
+            pbar.set_postfix({"Avg Reward (last 50)": f"{np.mean(ep_rewards[-50:]):.2f}"})
+
+    cp_dir = MARLConfig.get_checkpoint_dir()
+    save_path = os.path.join(cp_dir, save_filename)
+    agent.save(save_path)
+    print(f"✅ {algo_name} checkpoint saved: {save_path}")
 
 def train_gnn_marl():
     env = MARLMacEnv()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Node features: 8 -> Hidden: 64 -> Actions: 2 -> Heads: 4
-    policy_net = MAGAT_D3QN_QNetwork(node_in_dim=8, hidden_dim=64, num_actions=2, heads=4).to(device)
-    target_net = MAGAT_D3QN_QNetwork(node_in_dim=8, hidden_dim=64, num_actions=2, heads=4).to(device)
+    obs_dim = MARLConfig.OBS_DIM
+    hidden_dim = MARLConfig.HIDDEN_DIM
+    num_actions = MARLConfig.NUM_ACTIONS
+    heads = MARLConfig.GNN_HEADS
+    
+    policy_net = MAGAT_D3QN_QNetwork(node_in_dim=obs_dim, hidden_dim=hidden_dim, num_actions=num_actions, heads=heads).to(device)
+    target_net = MAGAT_D3QN_QNetwork(node_in_dim=obs_dim, hidden_dim=hidden_dim, num_actions=num_actions, heads=heads).to(device)
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
     
-    optimizer = optim.Adam(policy_net.parameters(), lr=1e-3)
+    optimizer = optim.Adam(policy_net.parameters(), lr=MARLConfig.LR)
+    memory = deque(maxlen=MARLConfig.REPLAY_SIZE)
+    batch_size = MARLConfig.BATCH_SIZE
+    gamma = MARLConfig.GAMMA
+    epsilon_start = MARLConfig.EPSILON_START
+    epsilon_end = MARLConfig.EPSILON_END
+    epsilon_decay = MARLConfig.EPSILON_DECAY
     
-    memory = deque(maxlen=50000)
-    batch_size = 64
-    gamma = 0.99
-    epsilon_start = 1.0
-    epsilon_end = 0.05
-    epsilon_decay = 5000
-    
-    episodes = 5000
+    episodes = MARLConfig.EPISODES
     steps_done = 0
-    
     episode_rewards = []
     
     print("=" * 60)
     print(f"Starting Multi-Agent GNN Training... Device: {device}")
     print("=" * 60)
     
-    # Initialize the Progress Bar
     pbar = tqdm(range(episodes), desc="Training MARL-GNN", unit="ep")
-    
     for ep in pbar:
         obs, _ = env.reset()
         x, edge_index = env.get_global_graph_state()
-        
         ep_reward = 0
         
-        step_pbar = tqdm(total=env.max_steps, desc=f"Ep {ep+1} Steps", leave=False, unit="step")
-        
         while env.agents:
-            epsilon = epsilon_end + (epsilon_start - epsilon_end) * \
-                math.exp(-1. * steps_done / epsilon_decay)
+            epsilon = epsilon_end + (epsilon_start - epsilon_end) * math.exp(-1. * steps_done / epsilon_decay)
             steps_done += 1
             
             x_t = torch.tensor(x, dtype=torch.float32).to(device)
@@ -71,20 +127,16 @@ def train_gnn_marl():
                     actions[agent] = env.action_space(agent).sample()
             else:
                 with torch.no_grad():
-                    q_vals = policy_net(x_t, edge_t) # Shape: (N, 2)
+                    q_vals = policy_net(x_t, edge_t)
                     for i, agent in enumerate(env.agents):
                         actions[agent] = q_vals[i].argmax().item()
                         
             next_obs, rewards, terminations, truncations, infos = env.step(actions)
-            
-            # Cooperative MARL uses a shared global reward
             reward_val = list(rewards.values())[0] if rewards else 0.0
             ep_reward += reward_val
             
             next_x, next_edge_index = env.get_global_graph_state()
             
-            # Parameter-Sharing Replay Buffer Storage
-            # We store the topological graph state, not just 1D arrays
             if env.agents:
                 act_list = [actions[a] for a in env.agents]
                 is_done = terminations[env.agents[0]]
@@ -93,10 +145,8 @@ def train_gnn_marl():
             x = next_x
             edge_index = next_edge_index
             
-            # Optimization Phase
             if len(memory) > batch_size:
                 batch = random.sample(memory, batch_size)
-                
                 loss = 0
                 for (b_x, b_edge, b_act, b_r, b_nx, b_nedge, b_d) in batch:
                     b_xt = torch.tensor(b_x, dtype=torch.float32).to(device)
@@ -104,16 +154,11 @@ def train_gnn_marl():
                     b_nxt = torch.tensor(b_nx, dtype=torch.float32).to(device)
                     b_nedget = torch.tensor(b_nedge, dtype=torch.long).to(device)
                     
-                    # Q(s, a) for all N agents simultaneously 
                     q_all = policy_net(b_xt, b_edget)
-                    q_a = q_all[range(env.N), b_act] # Gather Q-values for the precisely chosen actions
-                    
-                    # Target Q(s', a')
+                    q_a = q_all[range(params.N), b_act] 
                     with torch.no_grad():
                         q_next = target_net(b_nxt, b_nedget).max(1)[0]
                         target = b_r + gamma * q_next * (1 - int(b_d))
-                        
-                    # Calculate MSE Loss over the entire graph structure natively
                     loss += F.mse_loss(q_a, target)
                     
                 loss = loss / batch_size
@@ -124,26 +169,26 @@ def train_gnn_marl():
             if steps_done % 1000 == 0:
                 target_net.load_state_dict(policy_net.state_dict())
                 
-            step_pbar.update(1)
-            
-        step_pbar.close()
         episode_rewards.append(ep_reward)
         if ep % 5 == 0:
             pbar.set_postfix({"Avg Reward": f"{ep_reward:.2f}", "Epsilon": f"{epsilon:.3f}"})
         
-    os.makedirs(os.path.join(project_root, "results", "checkpoints"), exist_ok=True)
-    model_path = os.path.join(project_root, "results", "checkpoints", "gnn_marl_model.pth")
+    model_path = os.path.join(MARLConfig.get_checkpoint_dir(), "gnn_marl_model.pth")
     torch.save(policy_net.state_dict(), model_path)
     print(f"✅ MARL-GNN Topology Mapping Complete. Model saved to {model_path}")
-    
-    plt.figure(figsize=(10,5))
-    plt.plot(episode_rewards, label="Shared Graph Reward")
-    plt.title("MARL-GNN Training Over Dynamic MANET Topology")
-    plt.xlabel("Episode")
-    plt.ylabel("Reward (Throughput - Packet Loss)")
-    plt.grid()
-    plt.legend()
-    plt.savefig(os.path.join(project_root, "results", "gnn_marl_training.png"))
-    
+
 if __name__ == '__main__':
-    train_gnn_marl()
+    from algorithms.rl.marl_baselines import IQLAgent, VDNAgent, QMIXAgent
+    import argparse
+    parser = argparse.ArgumentParser(description="Standalone MARL Trainer")
+    parser.add_argument('--algo', type=str, default='all', choices=['all', 'iql', 'vdn', 'qmix', 'magat_d3qn'])
+    args = parser.parse_args()
+    
+    if args.algo in ['all', 'iql']:
+        train_marl_agent("IQL", IQLAgent, "marl_iql_model.pth")
+    if args.algo in ['all', 'vdn']:
+        train_marl_agent("VDN", VDNAgent, "marl_vdn_model.pth")
+    if args.algo in ['all', 'qmix']:
+        train_marl_agent("QMIX", QMIXAgent, "marl_qmix_model.pth", extra_kwargs={"embed_dim": MARLConfig.QMIX_EMBED_DIM})
+    if args.algo in ['all', 'magat_d3qn']:
+        train_gnn_marl()

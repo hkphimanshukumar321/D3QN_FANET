@@ -10,7 +10,7 @@ if project_root not in sys.path:
 
 from envs.adaptive_mac_env import AdaptiveMacEnv
 from algorithms.rl.tabular_qlearning import TabularQLearning
-from configs.rl_config import RLConfig
+from configs.sarl_config import RLConfig
 
 def load_models():
     models = {}

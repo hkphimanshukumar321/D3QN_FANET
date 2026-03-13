@@ -27,29 +27,20 @@ class MCAFeaturesExtractor(BaseFeaturesExtractor):
         )
         # Output dim = 64
 
-        # Branch B: Temporal Sequence Encoder (1D CNN)
-        # Input to Conv1D is (batch_size, channels, length) so we need to transpose (batch, T, feat)
-        # Conv1D views 'channels' as features, 'length' as time steps. 
-        # Wait, standard is (batch, in_channels, seq_len). 
-        # Our history shape: (T, num_scalars). We want to convolve over time, so channels = num_scalars, length = T.
-        in_channels = history_shape[1]
-        seq_len = history_shape[0]
-
-        self.temporal_encoder = nn.Sequential(
-            nn.Conv1d(in_channels=in_channels, out_channels=32, kernel_size=2, stride=1),
-            nn.ReLU(),
-            nn.Flatten()
+        # Branch B: Temporal Sequence Encoder (LSTM for DRQN Architecture)
+        # Input history shape: (batch_size, T_history_len, num_scalars)
+        input_size = history_shape[1]
+        
+        self.temporal_encoder = nn.LSTM(
+            input_size=input_size, 
+            hidden_size=64, 
+            num_layers=1, 
+            batch_first=True
         )
         
-        # Calculate Flatten output size dynamically
-        # Conv1d output length = (seq_len - kernel_size) / stride + 1 
-        #                      = (5 - 2) / 1 + 1 = 4
-        # Flat size = out_channels * out_len = 32 * 4 = 128
-        out_len = ((seq_len - 2) // 1) + 1
-        flat_size = 32 * out_len
-        
         self.temporal_proj = nn.Sequential(
-            nn.Linear(flat_size, 128),
+            nn.Linear(64, 128),
+            nn.LayerNorm(128),
             nn.ReLU()
         )
         # Output dim = 128
@@ -70,11 +61,15 @@ class MCAFeaturesExtractor(BaseFeaturesExtractor):
         # Branch A
         scalar_features = self.scalar_encoder(scalars)
         
-        # Branch B
-        # history is (batch, T, features). PyTorch Conv1d needs (batch, features, T)
-        history = history.transpose(1, 2)
-        temporal_conv = self.temporal_encoder(history)
-        temporal_features = self.temporal_proj(temporal_conv)
+        # Branch B (LSTM Timeline)
+        # history input: (batch, T, input_size)
+        lstm_out, (h_n, c_n) = self.temporal_encoder(history)
+        
+        # We only need the final hidden state context from the LSTM tuple
+        # h_n shape: (num_layers, batch, hidden_size). 
+        # For num_layers=1, it's (1, batch, 64). Squeeze to (batch, 64).
+        final_h = h_n[-1] 
+        temporal_features = self.temporal_proj(final_h)
         
         # Fusion
         combined = torch.cat([scalar_features, temporal_features], dim=1)

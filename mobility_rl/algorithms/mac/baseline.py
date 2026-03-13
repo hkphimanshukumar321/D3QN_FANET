@@ -71,6 +71,7 @@ class Logger:
         self.ts_drops = 0
         self.q_log = []
         self.ack_log = []
+        self.comm_log = []  # Per-link communication events: [{slot, sender, receiver, status, snr_db, ber}]
 
     def record_queue_time_series(self, slot_idx, max_cap, current_used):
         self.q_log.append({

@@ -183,7 +183,7 @@ def _coerce_config_value(key, value):
                   "RL_ALPHA", "RL_EPSILON", "RL_WT", "RL_WD",
                   "PATHLOSS_K", "PATHLOSS_ETA"}
     bool_keys = {"RTS_CTS_ENABLED", "ACK_ENABLED", "ENABLE_RL_SELECTOR",
-                 "ENABLE_PATHLOSS", "ENABLE_PROP_DELAY"}
+                 "ENABLE_PATHLOSS", "ENABLE_PROP_DELAY", "ENABLE_MARL"}
 
     if key in int_keys:
         return int(float(value))

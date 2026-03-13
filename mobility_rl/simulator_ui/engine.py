@@ -48,13 +48,15 @@ DEFAULT_CONFIG = {
     # Traffic
     "OFFERED_PPS": 200,
     # RL
-    "ENABLE_RL_SELECTOR": False,
+    "ENABLE_RL_SELECTOR": True,
     "RL_ALPHA": 0.1, "RL_GAMMA": 0.0, "RL_EPSILON": 0.0,
     "RL_WT": 0.5, "RL_WD": 0.5, "RL_TRAFFIC_BINS": 14,
     "RL_DECISION_INTERVAL": 10,  # ticks between RL decisions
     # Pathloss
-    "ENABLE_PATHLOSS": False, "PATHLOSS_K": 0.001, "PATHLOSS_ETA": 2.0,
-    "ENABLE_PROP_DELAY": False,
+    "ENABLE_PATHLOSS": True, "PATHLOSS_K": 0.001, "PATHLOSS_ETA": 2.0,
+    "ENABLE_PROP_DELAY": True,
+    # MARL
+    "ENABLE_MARL": True,
     # Render
     "RENDER_INTERPOLATION": True, "SNAPSHOT_BUFFER_SIZE": 2,
 }
@@ -114,7 +116,15 @@ class SimulationEngine:
         # Current state
         self.positions = self.mobility_model.positions.copy()
         self.velocities = self.mobility_model.velocities.copy()
-        self.distances = compute_distances(self.positions, self.sink_pos)
+        
+        from configs import config as params
+        if getattr(params, 'DECENTRALIZED_COMM', False):
+            diff = self.positions[:, np.newaxis, :] - self.positions[np.newaxis, :, :]
+            dist_sq = np.sum(diff ** 2, axis=-1)
+            np.fill_diagonal(dist_sq, np.inf)
+            self.distances = np.sqrt(np.min(dist_sq, axis=1))
+        else:
+            self.distances = compute_distances(self.positions, self.sink_pos)
         self.link_up = compute_link_up(self.distances, self.comm_range)
 
         # --- MAC state ---
@@ -189,6 +199,12 @@ class SimulationEngine:
 
         # --- History for export ---
         self.history = []
+        
+        # --- MARL state ---
+        self.marl_model = None
+        self.marl_decisions = {}  # per-tick: {agent_id: action}
+        if bool(c.get("ENABLE_MARL", False)):
+            self._load_marl_model()
 
     def _reset_metrics(self):
         self.total_pkts_success = 0
@@ -274,7 +290,14 @@ class SimulationEngine:
         else:
             self.positions, self.velocities = self.mobility_model.update(self.dt)
 
-        self.distances = compute_distances(self.positions, self.sink_pos)
+        from configs import config as params
+        if getattr(params, 'DECENTRALIZED_COMM', False):
+            diff = self.positions[:, np.newaxis, :] - self.positions[np.newaxis, :, :]
+            dist_sq = np.sum(diff ** 2, axis=-1)
+            np.fill_diagonal(dist_sq, np.inf)
+            self.distances = np.sqrt(np.min(dist_sq, axis=1))
+        else:
+            self.distances = compute_distances(self.positions, self.sink_pos)
         self.link_up = compute_link_up(self.distances, self.comm_range)
 
         # 2) RL MAC selection (if enabled)
@@ -308,6 +331,21 @@ class SimulationEngine:
         self.sim_time += self.dt
         self.tick_count += 1
         return snapshot
+
+    def _load_marl_model(self):
+        """Try to load a MARL GNN model for per-agent MAC decisions."""
+        try:
+            import torch
+            from algorithms.rl.gnn_marl import MAGAT_D3QN_QNetwork
+            cp_path = os.path.join(project_root, "results", "checkpoints", "gnn_marl_model.pth")
+            if os.path.exists(cp_path):
+                device = torch.device("cpu")
+                self.marl_model = MAGAT_D3QN_QNetwork(node_in_dim=8, hidden_dim=64, num_actions=2, heads=4).to(device)
+                self.marl_model.load_state_dict(torch.load(cp_path, map_location=device))
+                self.marl_model.eval()
+        except Exception as e:
+            print(f"Warning: MARL model load failed: {e}")
+            self.marl_model = None
 
     # ------------------------------------------------------------------
     # RL MAC selection
@@ -558,6 +596,7 @@ class SimulationEngine:
                 "link_up_ratio": round(link_ratio, 4),
                 "avg_queue_len": round(avg_q, 2),
             },
+            "marl_decisions": self.marl_decisions,
         }
 
     # ------------------------------------------------------------------

@@ -1,13 +1,14 @@
-# rl_config.py
+# sarl_config.py
 # Centralized configuration for the RL Environment and Training
 
 import os
+from configs import config as global_cfg
 
 class RLConfig:
     # ----------------------------------------------------
     # Environment Bounds (for Normalization)
     # ----------------------------------------------------
-    MAX_THROUGHPUT_MBPS = 5.0      # Equal to PHY_RATE_BPS
+    MAX_THROUGHPUT_MBPS = global_cfg.PHY_RATE_BPS / 1e6 # Dynamically bounds to phy rate instead of hardcoded BPSK assumption
     MAX_DELAY_MS = 200.0           # Clipping bound for delay
     MAX_QUEUE_OCCUPANCY = 100.0    # Equal to QMAX
     MAX_BACKLOG = 500.0            # Approx max backlog scale
@@ -33,7 +34,7 @@ class RLConfig:
     # ----------------------------------------------------
     # Training Hyperparameters Default 
     # ----------------------------------------------------
-    TOTAL_TIMESTEPS = 1_000
+    TOTAL_TIMESTEPS = 10_000
     N_ENVS = 4
     SEED = 42
 

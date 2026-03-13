@@ -5,20 +5,20 @@
 # Global Simulation & Node Parameters
 # ==========================================
 MAC_SELECTION = ["TDMA", "CSMA_CA", "TABULAR", "DQN", "PPO", "A2C", "MCA_D3QN", "MARL_GNN"]  # Protocols for RL evaluation
-N = 150                                   # Number of senders / nodes
-SIM_TIME_S = 15                               # Simulation duration (seconds)
-SLOT_TIME_S = 9e-6                            # Discrete time slot granularity
-PHY_RATE_BPS = 9e6                            # Data rate (channel/link capacity in bps)
-PAYLOAD_BYTES = 1500                          # Packet payload size
-QMAX = 100                                     # Queue/buffer capacity per node
+N = 50                                   # Number of senders / nodes
+SIM_TIME_S = 30                               # Simulation duration (seconds)
+SLOT_TIME_S = 2e-6                            # Discrete time slot granularity
+PHY_RATE_BPS = 3e6                            # Data rate (channel/link capacity in bps)
+PAYLOAD_BYTES = 1000                      # Packet payload size
+QMAX = 70                                   # Queue/buffer capacity per node
 SEED = 42                                     # Random seed baseline
 
 # ==========================================
 # Experiment Sweep Settings (Load)
 # ==========================================
 SWEEP_MIN_PPS = 100                           # Minimum total traffic load (packets/sec)
-SWEEP_MAX_PPS = 1000                          # Maximum total traffic load (packets/sec)
-SWEEP_STEPS = 20                               # Number of granular steps in the sweep
+SWEEP_MAX_PPS = 1500                          # Maximum total traffic load (packets/sec)
+SWEEP_STEPS = 30                               # Number of granular steps in the sweep
 
 # ==========================================
 # Traffic Generation Model
@@ -63,8 +63,8 @@ TDMA_GUARD_TIME_UNIT = "s"                    # Time unit for guard
 ENABLE_RL_SELECTOR = True  # Set False globally to avoid UI engine polling, managed instead by run_experiments.py
 RL_DECISION_INTERVAL_S = 1.0  # seconds between RL MAC selection queries
 RL_ALPHA = 0.1
-RL_GAMMA = 0.0
-RL_EPSILON = 0.0
+RL_GAMMA = 0.99
+RL_EPSILON = 0.1
 RL_WT = 0.5
 RL_WD = 0.5
 RL_STATE_MODE = "traffic_rate_bin"
@@ -76,17 +76,17 @@ RL_TRAFFIC_BINS = 14  # Number of bins to discretize traffic rate into
 ENABLE_MOBILITY = True
 
 # Bounding cube (meters)
-AREA_X = 1000.0   # A
-AREA_Y = 1000.0   # B
-AREA_Z = 300.0    # C
+AREA_X = 200   # A
+AREA_Y = 200   # B
+AREA_Z = 50    # C
 
 # Sink/base station position (fixed)
-SINK_X = 500.0
-SINK_Y = 500.0
-SINK_Z = 0.0
+SINK_X = 200
+SINK_Y = 200
+SINK_Z = 0
 
 # Mobility model: "gauss_markov" | "random_waypoint" | "random_walk" | "circular"
-MOBILITY_MODEL = "circular"
+MOBILITY_MODEL = "random_walk"
 
 # Gauss–Markov specific
 GM_ALPHA = 0.5   # memory / correlation (0 = fully random, 1 = deterministic)
@@ -103,21 +103,34 @@ CIRC_CLIMB_RATE = 0.5     # vertical climb/descent rate (m/s)
 # Speed configuration (variable speed — must have)
 SPEED_MODE = "gaussian"        # "uniform" | "gaussian" | "per_node_uniform" | "piecewise"
 V_MIN = 5.0                   # m/s minimum speed
-V_MAX = 30.0                  # m/s maximum speed
+V_MAX = 35                 # m/s maximum speed
 V_MEAN = 15.0                 # m/s (gaussian mode)
 V_STD = 5.0                   # m/s (gaussian mode)
 SPEED_UPDATE_INTERVAL = 5.0   # seconds between speed changes
 
 # Link model (Phase-1: range-gated binary)
-COMM_RANGE_R = 500.0          # meters
+COMM_RANGE_R = 200         # meters
 
 # Phase-2 optional path-loss (disabled by default)
 ENABLE_PATHLOSS = True
-PATHLOSS_K = 0.001
+PATHLOSS_K = 0.0001
 PATHLOSS_ETA = 2.0
 
 # Optional propagation delay (disabled by default)
 ENABLE_PROP_DELAY = True
+
+# ==========================================
+# Fade Model Configuration (Multi-Fading + Modulation)
+# ==========================================
+ENABLE_FADING = True
+FADING_MODEL = "nakagami"         # "awgn" | "rayleigh" | "rician" | "nakagami"
+NAKAGAMI_M = 1.0                  # Nakagami shape (m=1 → Rayleigh)
+NAKAGAMI_OMEGA = 1.0              # Nakagami spread (avg power)
+RICIAN_K = 3.0                    # Rician K-factor (dB)
+TX_POWER_DBM = 20.0              # Transmit power
+NOISE_POWER_DBM = -80          # Noise floor
+BER_THRESHOLD = 1e-3              # Max acceptable BER
+MODULATION = "QPSK"               # "BPSK" | "QPSK" | "8PSK" | "16QAM" | "64QAM" | "256QAM"
 
 # Mobility time step resolution (seconds)
 MOBILITY_DT = 0.1
@@ -131,7 +144,16 @@ RUN_CUSTOM_RL = True   # MCA-D3QN
 RUN_DQN = True
 RUN_PPO = True
 RUN_A2C = True
-RUN_MARL_GNN = True
+RUN_MARL_GNN = False
+
+# MARL Execution config
+ENABLE_MARL = True
+DECENTRALIZED_COMM = True  # If True, UAVs calculate pathloss to their closest peer instead of SINK
+
+# MARL Baselines
+RUN_MARL_IQL = False
+RUN_MARL_VDN = False
+RUN_MARL_QMIX = False
 
 # ==========================================
 # Results / Logging Controls
@@ -156,7 +178,7 @@ PARALLELIZE_OVER = ["loads"]       # Which parameter loops to parallelize
 # ==========================================
 ENABLE_GPU = True
 GPU_DEVICE_ID = 0
-FORCE_CPU = False
+FORCE_CPU = True
 TRAIN_ON_GPU = True
 EVAL_ON_GPU = False
 ENABLE_RESOURCE_LOGGING = True

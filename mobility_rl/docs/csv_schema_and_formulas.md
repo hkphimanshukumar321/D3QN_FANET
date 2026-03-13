@@ -94,3 +94,12 @@ Targeted isolation array extracting absolute delay metrics explicitly formatted 
 - `protocol`: (String) The specific MAC identifier.
 - `N`: (Integer) Node count for this matrix row.
 - `trial_id`: (String) The exact timestamped Trial ID generating this row data.
+
+### 2.5 `comm_log.csv` (MARL / Fading Enabled)
+High-resolution communication event log mapping per-link conditions during MARL execution or Fading tests.
+- `timestamp_slot`: (Integer) The specific simulation slot the transmission occurred.
+- `sender_id`: (Integer) The node ID transmitting the frame.
+- `receiver_id`: (Integer) The intended destination node ID.
+- `status`: (String) Outcome literal, e.g., "success" or "drop".
+- `snr_db`: (Float) The calculated Signal-to-Noise Ratio (SNR) in decibels at the receiver, incorporating path loss and dynamic fading channel conditions.
+- `ber`: (Float) The Bit Error Rate calculated instantaneously based on the `snr_db` and selected modulation scheme.

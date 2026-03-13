@@ -53,6 +53,35 @@ def compute_pathloss_db(distances, eta=2.0, d0=1.0, pl0=46.4):
     return pl0 + 10.0 * eta * np.log10(d_safe / d0)
 
 
+def compute_fading_success_prob(distances, fading_channel, ber_calc, tx_power_dbm, noise_power_dbm, payload_bits, rng):
+    """
+    Computes packet success probability combining path-loss, fading, and modulation BER.
+    """
+    # 1. Path loss (dB)
+    pl_db = compute_pathloss_db(distances)
+    
+    # 2. Fading gain (linear)
+    gains = fading_channel.sample_gain(distances.shape[0], rng)
+    
+    # 3. Rx SNR (dB)
+    # SNR = P_tx - PL + Gain_dB - Noise
+    # Or in linear: SNR = (P_tx / Noise) * (Gain / PL)
+    # Using dB math:
+    gain_db = 10.0 * np.log10(np.maximum(gains, 1e-10))
+    snr_db = tx_power_dbm - pl_db + gain_db - noise_power_dbm
+    
+    snr_linear = 10.0 ** (snr_db / 10.0)
+    
+    # 4. Compute BER for instantaneous SNR
+    ber = ber_calc.compute_ber(snr_linear)
+    
+    # 5. Packet success probability: P_succ = (1 - BER)^payload_bits
+    p_succ = np.power(1.0 - ber, payload_bits)
+    
+    return p_succ
+
+
+
 def compute_propagation_delay(distances):
     """
     Optional propagation delay: tau = d / c

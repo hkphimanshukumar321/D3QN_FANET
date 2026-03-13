@@ -13,10 +13,13 @@ from algorithms.mac.channel_aware_mac import simulate_tdma_aware, simulate_csma_
 from algorithms.mobility.speed import SpeedEngine
 from algorithms.mobility.models import create_mobility_model
 from algorithms.mobility.link import (
-    compute_distances, compute_link_up, compute_pathloss_success_prob
+    compute_distances, compute_link_up, compute_pathloss_success_prob, compute_fading_success_prob
+)
+from algorithms.channel.fading import (
+    BERCalculator, AWGNChannel, RayleighChannel, RicianChannel, NakagamiChannel
 )
 from configs import config as global_cfg
-from configs.rl_config import RLConfig
+from configs.sarl_config import RLConfig
 
 class AdaptiveMacEnv(gym.Env):
     """
@@ -52,6 +55,24 @@ class AdaptiveMacEnv(gym.Env):
         self.global_sim_time = 0.0
         self.mobility_model = None
         self.rng = None
+        self.fading_channel = None
+        self.ber_calc = None
+        
+        # Initialize fading models if enabled
+        if getattr(global_cfg, 'ENABLE_FADING', False):
+            self.ber_calc = BERCalculator(modulation=global_cfg.MODULATION)
+            
+            f_model = global_cfg.FADING_MODEL.lower()
+            if f_model == "awgn":
+                self.fading_channel = AWGNChannel()
+            elif f_model == "rayleigh":
+                self.fading_channel = RayleighChannel()
+            elif f_model == "rician":
+                self.fading_channel = RicianChannel(K=global_cfg.RICIAN_K)
+            elif f_model == "nakagami":
+                self.fading_channel = NakagamiChannel(m=global_cfg.NAKAGAMI_M, omega=global_cfg.NAKAGAMI_OMEGA)
+            else:
+                self.fading_channel = AWGNChannel() # Fallback
         
         # Performance history buffers
         self.history_buffer = np.zeros((self.history_len, self.num_scalars), dtype=np.float32)
@@ -148,10 +169,29 @@ class AdaptiveMacEnv(gym.Env):
 
         for i in range(n_steps):
             pos, vel = self.mobility_model.update(self.dt)
-            distances = compute_distances(pos, sink_pos)
+            
+            if getattr(global_cfg, 'DECENTRALIZED_COMM', False):
+                diff = pos[:, np.newaxis, :] - pos[np.newaxis, :, :]
+                dist_sq = np.sum(diff ** 2, axis=-1)
+                np.fill_diagonal(dist_sq, np.inf)  # Ignore self-distance
+                distances = np.sqrt(np.min(dist_sq, axis=1)) # Distance to nearest active peer
+            else:
+                distances = compute_distances(pos, sink_pos)
             
             lu_sched[:, i] = compute_link_up(distances, global_cfg.COMM_RANGE_R)
-            if global_cfg.ENABLE_PATHLOSS:
+            
+            if getattr(global_cfg, 'ENABLE_FADING', False) and self.fading_channel is not None:
+                payload_bits = getattr(global_cfg, 'PAYLOAD_BYTES', 1500) * 8
+                sp_sched[:, i] = compute_fading_success_prob(
+                    distances, 
+                    self.fading_channel, 
+                    self.ber_calc, 
+                    global_cfg.TX_POWER_DBM, 
+                    global_cfg.NOISE_POWER_DBM, 
+                    payload_bits, 
+                    self.rng
+                )
+            elif global_cfg.ENABLE_PATHLOSS:
                 sp_sched[:, i] = compute_pathloss_success_prob(distances, k=global_cfg.PATHLOSS_K, eta=global_cfg.PATHLOSS_ETA)
             
             all_speeds[:, i] = np.linalg.norm(vel, axis=1)
