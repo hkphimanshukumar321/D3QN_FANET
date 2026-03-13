@@ -5,7 +5,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from envs.adaptive_mac_env import AdaptiveMacEnv
+from envs.sarl_mac_env import AdaptiveMacEnv
 from algorithms.rl.sb3_baselines import create_sb3_baseline
 from algorithms.rl.tabular_qlearning import TabularQLearning
 from algorithms.rl.custom_mca_d3qn import create_mca_d3qn

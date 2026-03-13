@@ -534,7 +534,7 @@ def run_marl_on_sarl_ablation(traffic_pps_list, marl_dir, log_print):
     """
     log_print("\n=== ABLATION STUDY: MARL ON SARL ENV ===")
     try:
-        from envs.adaptive_mac_env import AdaptiveMacEnv
+        from envs.sarl_mac_env import AdaptiveMacEnv
         from algorithms.rl.marl_baselines import IQLAgent, VDNAgent, QMIXAgent
         import torch
     except ImportError:

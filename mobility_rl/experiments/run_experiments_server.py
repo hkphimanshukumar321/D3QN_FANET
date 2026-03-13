@@ -173,7 +173,7 @@ def train_single_model(kwargs):
     position = kwargs['position']
     
     import pandas as pd
-    from envs.adaptive_mac_env import AdaptiveMacEnv
+    from envs.sarl_mac_env import AdaptiveMacEnv
     
     pid = os.getpid()
     print(f"  [Worker {pid}] Starting training for {algo_name.upper()}...")
@@ -326,7 +326,7 @@ def load_and_benchmark_models(log_print):
         mem_mb = max(0, m_after - m_before)
         
         # 3. Latency
-        from envs.adaptive_mac_env import AdaptiveMacEnv
+        from envs.sarl_mac_env import AdaptiveMacEnv
         dummy_env = AdaptiveMacEnv()
         obs, _ = dummy_env.reset()
             
