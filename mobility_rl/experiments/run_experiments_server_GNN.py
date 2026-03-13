@@ -10,6 +10,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import time
 import multiprocessing
+try:
+    multiprocessing.set_start_method('spawn', force=True)
+except RuntimeError:
+    pass  # Already set
 import psutil
 from tqdm import tqdm
 
@@ -303,6 +307,10 @@ def execute_marl_multiprocess_training(marl_out_dir, episodes, log_print):
     cpu_cores = os.cpu_count() or 1
     workers = min(cpu_cores, len(tasks))
     log_print(f"  [MARL Train] Detected {cpu_cores} CPU cores — using {workers} workers for {len(tasks)} MARL algorithms")
+    
+    if workers == 0:
+        log_print("  [MARL Train] WARNING: No MARL algorithms enabled in config.py. Skipping training.")
+        return
     
     with multiprocessing.Pool(processes=workers) as pool:
         for result in pool.imap_unordered(train_single_marl_model, kwargs_list):

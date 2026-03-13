@@ -144,16 +144,16 @@ RUN_CUSTOM_RL = True   # MCA-D3QN
 RUN_DQN = True
 RUN_PPO = True
 RUN_A2C = True
-RUN_MARL_GNN = False
+RUN_MARL_GNN = True
 
 # MARL Execution config
 ENABLE_MARL = True
 DECENTRALIZED_COMM = True  # If True, UAVs calculate pathloss to their closest peer instead of SINK
 
 # MARL Baselines
-RUN_MARL_IQL = False
-RUN_MARL_VDN = False
-RUN_MARL_QMIX = False
+RUN_MARL_IQL = True
+RUN_MARL_VDN = True
+RUN_MARL_QMIX = True
 
 # ==========================================
 # Results / Logging Controls
