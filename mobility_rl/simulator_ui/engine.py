@@ -337,12 +337,21 @@ class SimulationEngine:
         try:
             import torch
             from algorithms.rl.gnn_marl import MAGAT_D3QN_QNetwork
-            cp_path = os.path.join(project_root, "results", "checkpoints", "gnn_marl_model.pth")
+            from configs.marl_config import MARLConfig
+            # Prefer unified checkpoints, fallback to legacy path
+            cp_unified = os.path.join(project_root, "results", "checkpoints_unified", "unified_gnn_marl_model.pth")
+            cp_legacy = os.path.join(project_root, "results", "checkpoints", "gnn_marl_model.pth")
+            cp_path = cp_unified if os.path.exists(cp_unified) else cp_legacy
             if os.path.exists(cp_path):
                 device = torch.device("cpu")
-                self.marl_model = MAGAT_D3QN_QNetwork(node_in_dim=8, hidden_dim=64, num_actions=2, heads=4).to(device)
+                obs_dim = MARLConfig.OBS_DIM
+                self.marl_model = MAGAT_D3QN_QNetwork(
+                    node_in_dim=obs_dim, hidden_dim=MARLConfig.HIDDEN_DIM,
+                    num_actions=MARLConfig.NUM_ACTIONS, heads=MARLConfig.GNN_HEADS
+                ).to(device)
                 self.marl_model.load_state_dict(torch.load(cp_path, map_location=device))
                 self.marl_model.eval()
+                print(f"  MARL model loaded from: {cp_path}")
         except Exception as e:
             print(f"Warning: MARL model load failed: {e}")
             self.marl_model = None

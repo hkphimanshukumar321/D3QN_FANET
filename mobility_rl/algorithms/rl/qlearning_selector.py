@@ -6,15 +6,25 @@ import matplotlib.pyplot as plt
 
 class QLearningAgent:
     """
-    Tabular Q-learning agent for selecting between:
-      action 0: TDMA
-      action 1: CSMA/CA
+    ╔══════════════════════════════════════════════════════════════════╗
+    ║              ORACLE MAC SELECTOR  (Upper-Bound Benchmark)       ║
+    ╠══════════════════════════════════════════════════════════════════╣
+    ║  This agent has FULL HINDSIGHT: it sees metrics for BOTH TDMA   ║
+    ║  and CSMA/CA at each traffic point BEFORE making its decision.  ║
+    ║  It represents the THEORETICAL UPPER BOUND on MAC selection     ║
+    ║  performance — no online RL agent can outperform this.          ║
+    ║                                                                  ║
+    ║  Usage in journal:                                               ║
+    ║    • Plot as dark-black dashed line labelled "Oracle (Upper Bound)" ║
+    ║    • The closer an RL agent's curve is to the Oracle, the        ║
+    ║      better that agent has learned the optimal MAC policy.        ║
+    ╚══════════════════════════════════════════════════════════════════╝
 
-    NOTE: In this project we do *offline full-information* updates:
-    at each logged point we already have metrics for BOTH MACs,
-    so we update Q(s,0) and Q(s,1) every step (no need to "try" actions).
-    This avoids the common failure mode where forced exploration + too-fine bins
-    makes the agent always pick TDMA.
+    Actions: 0 = TDMA,  1 = CSMA/CA
+
+    NOTE: Offline full-information updates — at each logged point we
+    already have metrics for BOTH MACs, so we update Q(s,0) and Q(s,1)
+    every step (no exploration needed). This is NOT a fair online agent.
     """
 
     def __init__(self, alpha: float, gamma: float, epsilon: float, n_bins: int):

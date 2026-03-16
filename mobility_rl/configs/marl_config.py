@@ -45,6 +45,6 @@ class MARLConfig:
     # --------------------------------------------------
     @staticmethod
     def get_checkpoint_dir():
-        base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "results", "checkpoints"))
+        base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "results", "checkpoints_unified"))
         os.makedirs(base, exist_ok=True)
         return base
