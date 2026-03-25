@@ -451,6 +451,9 @@ def _train_marl_worker(kwargs):
             x, edge_index = env.get_global_graph_state()
             ep_reward = 0
             epsilon = 0.05 + 0.95 * math.exp(-float(ep) / 500.0)
+            
+            # Reset the GRU memory at the start of the temporal rollout
+            policy_net.reset_memory()
 
             while env.agents:
                 x_t = torch.tensor(x, dtype=torch.float32).to(device)
@@ -486,11 +489,17 @@ def _train_marl_worker(kwargs):
                         bet = torch.tensor(bei, dtype=torch.long).to(device)
                         bnxt = torch.tensor(bnx, dtype=torch.float32).to(device)
                         bnet = torch.tensor(bnei, dtype=torch.long).to(device)
+                        
+                        # We must reset isolated GRU memory for shuffled, non-sequential random samples
+                        policy_net.reset_memory()
                         q_all = policy_net(bxt, bet)
                         q_a = q_all[range(len(ba)), ba]
+                        
                         with torch.no_grad():
+                            target_net.reset_memory()
                             q_next = target_net(bnxt, bnet).max(1)[0]
                             target = br + gamma * q_next * (1 - int(bd))
+                        
                         losses.append(torch.nn.functional.mse_loss(q_a, target))
                     loss = torch.stack(losses).mean()
                     optimizer.zero_grad()
