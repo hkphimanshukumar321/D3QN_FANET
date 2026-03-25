@@ -480,7 +480,7 @@ def _train_marl_worker(kwargs):
 
                 if len(memory) > batch_size:
                     batch = random.sample(memory, batch_size)
-                    loss = torch.tensor(0.0, device=device)
+                    losses = []
                     for (bx, bei, ba, br, bnx, bnei, bd) in batch:
                         bxt = torch.tensor(bx, dtype=torch.float32).to(device)
                         bet = torch.tensor(bei, dtype=torch.long).to(device)
@@ -491,8 +491,8 @@ def _train_marl_worker(kwargs):
                         with torch.no_grad():
                             q_next = target_net(bnxt, bnet).max(1)[0]
                             target = br + gamma * q_next * (1 - int(bd))
-                        loss += torch.nn.functional.mse_loss(q_a, target)
-                    loss /= batch_size
+                        losses.append(torch.nn.functional.mse_loss(q_a, target))
+                    loss = torch.stack(losses).mean()
                     optimizer.zero_grad()
                     loss.backward()
                     optimizer.step()
