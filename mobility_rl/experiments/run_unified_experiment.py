@@ -262,6 +262,7 @@ def _train_sarl_worker(kwargs):
     import pandas as pd
     from envs.marl_sarl_wrapper import MARLtoSARLWrapper
     from utils.device_manager import resolve_device
+    from utils.experiment_tracking import WandbMARLLogger
 
     pid = os.getpid()
     train_device = resolve_device("train")
