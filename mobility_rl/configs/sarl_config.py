@@ -10,9 +10,9 @@ class RLConfig:
     # ----------------------------------------------------
     MAX_THROUGHPUT_MBPS = global_cfg.PHY_RATE_BPS / 1e6 # Dynamically bounds to phy rate instead of hardcoded BPSK assumption
     MAX_DELAY_MS = 200.0           # Clipping bound for delay
-    MAX_QUEUE_OCCUPANCY = 100.0    # Equal to QMAX
+    MAX_QUEUE_OCCUPANCY = float(global_cfg.QMAX)    # Equal to QMAX
     MAX_BACKLOG = 500.0            # Approx max backlog scale
-    MAX_SPEED_MPS = 45.0           # Max V_MAX
+    MAX_SPEED_MPS = float(global_cfg.V_MAX)         # Max V_MAX
     TRAIN_SIM_TIME_S = 10.0        # Duration of one training episode
     DECISION_INTERVAL_S = 1.0      # Time between RL actions (seconds)
     
@@ -26,10 +26,10 @@ class RLConfig:
     # Reward Weights (MCA-D3QN)
     # Rt = w_T*T^ - w_D*D^ - w_F*F^ - w_J*J^
     # ----------------------------------------------------
-    REWARD_W_THROUGHPUT = 1.0
-    REWARD_W_DELAY = 1.0
-    REWARD_W_FAILURES = 0.5
-    REWARD_W_JITTER = 0.2
+    REWARD_W_THROUGHPUT = 0.5      # MATCH MARL W_THROUGHPUT
+    REWARD_W_DELAY = 0.1           # MATCH MARL W_DELAY
+    REWARD_W_FAILURES = 0.3        # MATCH MARL W_DROPS
+    REWARD_W_JITTER = 0.2          # MATCH MARL W_COLLISIONS
     
     # ----------------------------------------------------
     # Training Hyperparameters Default 

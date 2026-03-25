@@ -5,6 +5,8 @@ import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from configs import config as params
+from configs.marl_config import MARLConfig
 
 
 # =====================================================================
@@ -206,7 +208,9 @@ def generate_aggregated_rl_plots(all_results, baseline_df, q_df, rl_out_dir, log
     log_print : callable.
     """
     img_dir = os.path.join(rl_out_dir, "images")
+    csv_dir = os.path.join(rl_out_dir, "csv")
     os.makedirs(img_dir, exist_ok=True)
+    os.makedirs(csv_dir, exist_ok=True)
 
     load = baseline_df["Offered_Load_pps"]
 
@@ -237,17 +241,71 @@ def generate_aggregated_rl_plots(all_results, baseline_df, q_df, rl_out_dir, log
     plt.savefig(os.path.join(img_dir, "rl_vs_baseline_throughput.png"), dpi=300, bbox_inches="tight")
     plt.close()
 
-    # --- MAC Selection Heatmap per model ---
+    # --- MAC Selection vs Oracle per model ---
+    tdma_col = "TDMA_Throughput_Mbps"
+    csma_col = "CSMA_Throughput_Mbps"
+    tdma_delay_col = "TDMA_Delay_s"
+    csma_delay_col = "CSMA_Delay_s"
+    oracle_map = {}
+    if all(c in baseline_df.columns for c in [tdma_col, csma_col, tdma_delay_col, csma_delay_col]):
+        max_thr = max(float(params.PHY_RATE_BPS) / 1e6, 1e-9)
+        for _, row in baseline_df.iterrows():
+            pps = int(row["Offered_Load_pps"])
+            tdma_score = MARLConfig.W_THROUGHPUT * (float(row[tdma_col]) / max_thr) - MARLConfig.W_DELAY * (float(row[tdma_delay_col]) * 1000.0 / 100.0)
+            csma_score = MARLConfig.W_THROUGHPUT * (float(row[csma_col]) / max_thr) - MARLConfig.W_DELAY * (float(row[csma_delay_col]) * 1000.0 / 100.0)
+            oracle_map[pps] = "TDMA" if tdma_score >= csma_score else "CSMA/CA"
+
+    match_rows = []
     for name, preds in all_results.items():
-        pred_df = pd.DataFrame(preds)
-        plt.figure(figsize=(10, 3), dpi=150)
-        mac_numeric = [0 if m == "TDMA" else 1 for m in pred_df["Selected_MAC"]]
-        plt.bar(pred_df["Offered_Load_pps"], mac_numeric, color="steelblue", edgecolor="white")
+        pred_df = pd.DataFrame(preds).sort_values("Offered_Load_pps")
+        if pred_df.empty:
+            continue
+
+        x = pred_df["Offered_Load_pps"].astype(int).to_numpy()
+        model_numeric = np.array([0 if m == "TDMA" else 1 for m in pred_df["Selected_MAC"]], dtype=np.int32)
+
+        oracle_numeric = None
+        match_rate = None
+        if oracle_map:
+            oracle_mac = [oracle_map.get(int(pps), "CSMA/CA") for pps in x]
+            oracle_numeric = np.array([0 if m == "TDMA" else 1 for m in oracle_mac], dtype=np.int32)
+            match_rate = float(np.mean(model_numeric == oracle_numeric) * 100.0)
+            match_rows.append({"Model": name, "Oracle_Match_Pct": round(match_rate, 2)})
+
+        plt.figure(figsize=(12, 3.5), dpi=150)
+        plt.step(x, model_numeric, where="mid", color="steelblue", linewidth=2.2, label=f"{name} selection")
+        plt.scatter(x, model_numeric, color="steelblue", s=24, zorder=3)
+
+        if oracle_numeric is not None:
+            plt.step(x, oracle_numeric, where="mid", color="black", linestyle="--", linewidth=2, label="Oracle")
+            plt.scatter(x, oracle_numeric, color="black", s=16, marker="x", zorder=3)
+
+        plt.ylim(-0.2, 1.2)
         plt.yticks([0, 1], ["TDMA", "CSMA/CA"])
         plt.xlabel("Offered Load (pps)", fontsize=11, fontweight="bold")
-        plt.title(f"{name} — MAC Selection vs Load", fontsize=12, fontweight="bold")
+
+        title = f"{name} — MAC Selection vs Load"
+        if match_rate is not None:
+            title += f"  (Oracle match: {match_rate:.1f}%)"
+        plt.title(title, fontsize=12, fontweight="bold")
+
+        plt.grid(True, axis="x", alpha=0.35)
+        plt.legend(fontsize=9, frameon=True, loc="best")
         plt.tight_layout()
         plt.savefig(os.path.join(img_dir, f"mac_selection_{name}.png"), dpi=300, bbox_inches="tight")
+        plt.close()
+
+    if match_rows:
+        match_df = pd.DataFrame(match_rows).sort_values("Oracle_Match_Pct", ascending=False)
+        match_df.to_csv(os.path.join(csv_dir, "mac_selection_vs_oracle_match.csv"), index=False)
+        plt.figure(figsize=(10, 5), dpi=150)
+        plt.barh(match_df["Model"], match_df["Oracle_Match_Pct"], color="slateblue", alpha=0.85)
+        plt.xlim(0, 100)
+        plt.xlabel("Match with Oracle MAC choice (%)", fontsize=11, fontweight="bold")
+        plt.title("MAC Selection Agreement with Oracle", fontsize=12, fontweight="bold")
+        plt.grid(True, axis="x", alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(img_dir, "mac_selection_vs_oracle_match.png"), dpi=300, bbox_inches="tight")
         plt.close()
 
     log_print(f"  [Plot] Saved aggregated RL plots to {img_dir}")

@@ -23,6 +23,8 @@ def test_repository_imports():
         "envs.marl_mac_env",
         "simulator_ui.engine",
         "simulator_ui.server",
+        "utils.experiment_tracking",
+        "utils.rich_logger",
     ]
     
     for mod_name in modules_to_check:

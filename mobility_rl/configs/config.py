@@ -6,11 +6,11 @@
 # ==========================================
 MAC_SELECTION = ["TDMA", "CSMA_CA", "TABULAR", "DQN", "PPO", "A2C", "MCA_D3QN", "MARL_GNN"]  # Protocols for RL evaluation
 N = 50                                   # Number of senders / nodes
-SIM_TIME_S = 10                               # Simulation duration (seconds)
-SLOT_TIME_S = 2e-6                            # Discrete time slot granularity
-PHY_RATE_BPS = 3e6                            # Data rate (channel/link capacity in bps)
+SIM_TIME_S = 15                               # Simulation duration (seconds)
+SLOT_TIME_S = 9e-6                            # Discrete time slot granularity
+PHY_RATE_BPS = 5e6                            # Data rate (channel/link capacity in bps)
 PAYLOAD_BYTES = 1000                      # Packet payload size
-QMAX = 70                                   # Queue/buffer capacity per node
+QMAX = 100                                   # Queue/buffer capacity per node
 SEED = 42                                     # Random seed baseline
 
 # ==========================================
@@ -40,7 +40,7 @@ CW_MAX = 1023
 DIFS_SLOTS = 4
 SIFS_SLOTS = 2
 ACK_TIMEOUT_SLOTS = 10
-MAX_RETRY = 10
+MAX_RETRY = 1
 
 # Features
 RTS_CTS_ENABLED = True
@@ -62,13 +62,13 @@ TDMA_GUARD_TIME_UNIT = "s"                    # Time unit for guard
 # ==========================================
 ENABLE_RL_SELECTOR = True  # Set False globally to avoid UI engine polling, managed instead by run_experiments.py
 RL_DECISION_INTERVAL_S = 1.0  # seconds between RL MAC selection queries
-RL_ALPHA = 0.1
-RL_GAMMA = 0.99
-RL_EPSILON = 0.1
-RL_WT = 0.5
-RL_WD = 0.5
+RL_ALPHA = 1.0        # 1.0 = instant learning of the current best observation
+RL_GAMMA = 0.0        # 0.0 = independent points, no future discounting (it's a static CSV sweep)
+RL_EPSILON = 0.0      # 0.0 = never randomly explore
+RL_WT = 0.5           # match MARL_Config.W_THROUGHPUT
+RL_WD = 0.1           # match MARL_Config.W_DELAY
 RL_STATE_MODE = "traffic_rate_bin"
-RL_TRAFFIC_BINS = 14  # Number of bins to discretize traffic rate into
+RL_TRAFFIC_BINS = 30  # Needs to match SWEEP_STEPS exactly so each traffic load point gets its own bin
 
 # ==========================================
 # 3D Mobility Parameters
@@ -83,7 +83,7 @@ AREA_Z = 50    # C
 # Sink/base station position (fixed)
 SINK_X = 200
 SINK_Y = 200
-SINK_Z = 0
+SINK_Z = 25
 
 # Mobility model: "gauss_markov" | "random_waypoint" | "random_walk" | "circular"
 MOBILITY_MODEL = "random_walk"
@@ -101,7 +101,7 @@ CIRC_OMEGA_STD = 0.02     # std dev of angular velocity
 CIRC_CLIMB_RATE = 0.5     # vertical climb/descent rate (m/s)
 
 # Speed configuration (variable speed — must have)
-SPEED_MODE = "gaussian"        # "uniform" | "gaussian" | "per_node_uniform" | "piecewise"
+SPEED_MODE = "uniform"        # "uniform" | "gaussian" | "per_node_uniform" | "piecewise"
 V_MIN = 5.0                   # m/s minimum speed
 V_MAX = 35                 # m/s maximum speed
 V_MEAN = 15.0                 # m/s (gaussian mode)
@@ -113,7 +113,7 @@ COMM_RANGE_R = 200         # meters
 
 # Phase-2 optional path-loss (disabled by default)
 ENABLE_PATHLOSS = True
-PATHLOSS_K = 0.0001
+PATHLOSS_K = 0.00001
 PATHLOSS_ETA = 2.0
 
 # Optional propagation delay (disabled by default)
@@ -124,7 +124,7 @@ ENABLE_PROP_DELAY = True
 # ==========================================
 ENABLE_FADING = True
 FADING_MODEL = "nakagami"         # "awgn" | "rayleigh" | "rician" | "nakagami"
-NAKAGAMI_M = 1.0                  # Nakagami shape (m=1 → Rayleigh)
+NAKAGAMI_M = 2.0                  # Nakagami shape (m=1 → Rayleigh)
 NAKAGAMI_OMEGA = 1.0              # Nakagami spread (avg power)
 RICIAN_K = 3.0                    # Rician K-factor (dB)
 TX_POWER_DBM = 20.0              # Transmit power
@@ -178,7 +178,7 @@ PARALLELIZE_OVER = ["loads"]       # Which parameter loops to parallelize
 # ==========================================
 ENABLE_GPU = True
 GPU_DEVICE_ID = 0
-FORCE_CPU = True
+FORCE_CPU = False
 TRAIN_ON_GPU = True
 EVAL_ON_GPU = True
 ENABLE_RESOURCE_LOGGING = True

@@ -29,10 +29,10 @@ class MARLConfig:
     # --------------------------------------------------
     # Reward Weights
     # --------------------------------------------------
-    W_THROUGHPUT = 1.0
-    W_DELAY = 0.5
-    W_DROPS = 0.3
-    W_COLLISIONS = 0.2
+    W_THROUGHPUT = 0.3
+    W_DELAY = 0.05
+    W_DROPS = 0.4
+    W_COLLISIONS = 0.3
     W_LINK_UTIL = 0.1
 
     # --------------------------------------------------

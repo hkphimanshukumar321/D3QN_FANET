@@ -1,6 +1,7 @@
 numpy
 pandas
 matplotlib
+seaborn
 scipy
 psutil
 gymnasium
@@ -9,3 +10,6 @@ stable-baselines3
 torch
 torch_geometric
 networkx
+wandb
+rich
+tqdm
