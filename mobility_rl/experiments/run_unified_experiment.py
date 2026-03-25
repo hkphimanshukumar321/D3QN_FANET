@@ -531,6 +531,8 @@ def _train_marl_worker(kwargs):
     else:
         return f"Unknown MARL algo: {algo}"
 
+    from utils.experiment_tracking import WandbMARLLogger
+    wb_logger = WandbMARLLogger(algo_name=algo)
     ep_rewards = []
     for ep in tqdm(range(episodes), desc=algo.upper(), unit="ep"):
         obs_dict, _ = env.reset()
@@ -1472,7 +1474,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Unified SARL+MARL Experiment Runner")
     parser.add_argument('--dry-run', action='store_true', help="Quick test with minimal params")
     parser.add_argument('--force-retrain', action='store_true', help="Ignore existing checkpoints and retrain models")
-    parser.add_argument('--train-if-missing', action='store_true', help="Train models that are missing checkpoints (default: checkpoint-only eval)")
+    parser.add_argument('--skip-training', action='store_true', help="Skip training and purely evaluate using existing checkpoints")
     parser.add_argument('--phy-rate-mbps', type=float, default=None, help="Override PHY rate in Mbps (e.g., 9)")
     parser.add_argument('--nodes', type=int, default=None, help="Override number of nodes")
     parser.add_argument('--qmax', type=int, default=None, help="Override queue size")
@@ -1484,7 +1486,7 @@ if __name__ == '__main__':
     run_unified_experiment(
         dry_run=args.dry_run,
         force_retrain=args.force_retrain,
-        use_checkpoints_only=(not args.train_if_missing),
+        use_checkpoints_only=args.skip_training,
         phy_rate_mbps=args.phy_rate_mbps,
         nodes=args.nodes,
         qmax=args.qmax,
