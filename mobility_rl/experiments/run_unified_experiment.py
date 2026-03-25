@@ -401,6 +401,7 @@ def _train_marl_worker(kwargs):
     from configs.marl_config import MARLConfig
     from configs import config as params
     from utils.device_manager import resolve_device
+    from utils.experiment_tracking import WandbMARLLogger
 
     pid = os.getpid()
     train_device = resolve_device("train")
@@ -531,7 +532,6 @@ def _train_marl_worker(kwargs):
     else:
         return f"Unknown MARL algo: {algo}"
 
-    from utils.experiment_tracking import WandbMARLLogger
     wb_logger = WandbMARLLogger(algo_name=algo)
     ep_rewards = []
     for ep in tqdm(range(episodes), desc=algo.upper(), unit="ep"):
