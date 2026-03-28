@@ -10,6 +10,7 @@ import os
 try:
     import wandb
     _HAS_WANDB = True
+    wandb.login(key="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")
 except ImportError:
     wandb = None
     _HAS_WANDB = False
