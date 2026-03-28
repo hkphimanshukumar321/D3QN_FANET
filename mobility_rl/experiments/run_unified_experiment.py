@@ -651,8 +651,7 @@ def step2_train(
     marl_tasks = []
     if getattr(params, "RUN_MARL_IQL", True): marl_tasks.append('iql')
     if getattr(params, "RUN_MARL_VDN", True): marl_tasks.append('vdn')
-    # NOTE: QMIX is intentionally disabled due to known torch/nn instability for fixed N=150 runs.
-    # if getattr(params, "RUN_MARL_QMIX", True): marl_tasks.append('qmix')
+    if getattr(params, "RUN_MARL_QMIX", True): marl_tasks.append('qmix')
     if getattr(params, "RUN_MARL_GNN", True): marl_tasks.append('magat_d3qn')
 
     all_kwargs = []
@@ -747,13 +746,13 @@ def step3_evaluate(pps_list, cp_dir, out_dir, log, deterministic_eval=True):
             models[name] = ('marl', agent)
             log(f"  Loaded MARL: {name}")
 
-    # NOTE: QMIX load is intentionally disabled due to known torch/nn instability for fixed N=150 runs.
-    # qmix_path = os.path.join(cp_dir, "unified_qmix_model.pth")
-    # if os.path.exists(qmix_path):
-    #     agent = QMIXAgent(N, obs_dim, 2)
-    #     agent.load(qmix_path)
-    #     models["QMIX"] = ('marl', agent)
-    #     log(f"  Loaded MARL: QMIX")
+    # QMIX uses a dict checkpoint (q_net + mixer), needs embed_dim
+    qmix_path = os.path.join(cp_dir, "unified_qmix_model.pth")
+    if os.path.exists(qmix_path):
+        agent = QMIXAgent(N, obs_dim, 2, embed_dim=MARLConfig.QMIX_EMBED_DIM)
+        agent.load(qmix_path)
+        models["QMIX"] = ('marl', agent)
+        log(f"  Loaded MARL: QMIX")
 
     gnn_path = os.path.join(cp_dir, "unified_gnn_marl_model.pth")
     if os.path.exists(gnn_path):

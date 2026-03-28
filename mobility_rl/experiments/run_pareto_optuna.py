@@ -77,7 +77,7 @@ ALGO_NAME_MAP = {
 VALID_ALGOS = list(ALGO_NAME_MAP.keys())
 
 # Default recommended algorithms for --algos all
-DEFAULT_ALL_ALGOS = ["dqn", "iql", "vdn", "magat_d3qn"]
+DEFAULT_ALL_ALGOS = ["dqn", "iql", "vdn", "qmix", "magat_d3qn"]
 
 # Is this a GNN algorithm?  (gets reduced trial budget)
 GNN_ALGOS = {"magat_d3qn"}
