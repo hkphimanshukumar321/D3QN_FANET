@@ -13,3 +13,4 @@ networkx
 wandb
 rich
 tqdm
+optuna

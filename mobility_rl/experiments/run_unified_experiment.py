@@ -4,6 +4,20 @@ Unified Experiment Runner — SARL + MARL on MARL Environment
 Trains and evaluates ALL agents (SARL and MARL) on the same MARLMacEnv,
 with ablation studies for fair comparison.
 
+Shared Reward Semantics
+-----------------------
+All RL methods (SARL and MARL) optimize the same shared network-level
+cooperative reward computed from four normalized evaluation metrics:
+
+    R = + wT  · norm_throughput
+        - wD  · norm_delay
+        - wDr · norm_drops
+        - wCo · norm_collisions
+
+Reward weights are defined in ``configs/marl_config.py`` (MARLConfig) and
+applied identically to every agent.  No algorithm receives a local or
+algorithm-specific reward definition.
+
 Usage:
     python experiments/run_unified_experiment.py
     python experiments/run_unified_experiment.py --dry-run
@@ -66,10 +80,38 @@ MAC_NAMES = {0: "TDMA", 1: "CSMA_CA"}
 SARL_ALGOS = ['tabular', 'dqn', 'ppo', 'a2c', 'mca_d3qn']
 MARL_ALGOS = ['iql', 'vdn', 'qmix', 'magat_d3qn']
 
+# Canonical mapping: CLI/internal name → display name in CSVs and plots
+ALGO_NAME_MAP = {
+    "tabular": "Tabular",
+    "dqn": "DQN",
+    "ppo": "PPO",
+    "a2c": "A2C",
+    "mca_d3qn": "MCA-D3QN",
+    "iql": "IQL",
+    "vdn": "VDN",
+    "qmix": "QMIX",
+    "magat_d3qn": "MAGAT-D3QN",
+}
+
 ABLATION_NODE_COUNTS = [20, 50, 100, 150]
 ABLATION_RTS_CTS = [True, False]
-ABLATION_REWARD_WEIGHTS = [(0.8, 0.2), (0.6, 0.4), (0.5, 0.5), (0.4, 0.6), (0.2, 0.8)]
+# 4-weight tuples: (wT, wD, wDrop, wCol) — normalized to sum=1
+# Covers uniform, single-emphasis, and mixed configurations.
+ABLATION_REWARD_WEIGHTS = [
+    (0.25, 0.25, 0.25, 0.25),   # Uniform
+    (0.55, 0.15, 0.15, 0.15),   # Throughput emphasis
+    (0.15, 0.55, 0.15, 0.15),   # Delay emphasis
+    (0.15, 0.15, 0.55, 0.15),   # Drop emphasis
+    (0.15, 0.15, 0.15, 0.55),   # Collision emphasis
+    (0.40, 0.20, 0.20, 0.20),   # Practical T-focused
+    (0.30, 0.30, 0.20, 0.20),   # Practical balanced
+]
 ABLATION_FADING = ["awgn", "rayleigh", "nakagami"]
+
+# Normalization bounds for post-hoc weighted utility scoring
+DELAY_BOUND_MS = 100.0      # delay divisor
+DROP_BOUND = 1000            # drop count divisor
+COLLISION_BOUND = 1000       # collision count divisor
 
 # =====================================================================
 # Utility
@@ -739,7 +781,7 @@ def step3_evaluate(pps_list, cp_dir, out_dir, log, deterministic_eval=True):
         setattr(params, "OFFERED_PPS", int(pps))
 
         for model_name, (mtype, model) in models.items():
-            total_thr, total_delay, total_drops, steps = 0, 0, 0, 0
+            total_thr, total_delay, total_drops, total_collisions, steps = 0, 0, 0, 0, 0
             mac_choices = []
             avg_thr, avg_delay, dom_mac = 0.0, 0.0, "CSMA"
             total_inf_time = 0.0
@@ -767,6 +809,7 @@ def step3_evaluate(pps_list, cp_dir, out_dir, log, deterministic_eval=True):
                         total_thr += any_i.get("throughput", 0)
                         total_delay += any_i.get("delay_ms", 0)
                         total_drops += any_i.get("drops", 0)
+                        total_collisions += any_i.get("collisions", 0)
                     steps += 1
 
                 avg_thr = total_thr / max(steps, 1)
@@ -794,6 +837,7 @@ def step3_evaluate(pps_list, cp_dir, out_dir, log, deterministic_eval=True):
                     total_thr += any_i.get("throughput", 0)
                     total_delay += any_i.get("delay_ms", 0)
                     total_drops += any_i.get("drops", 0)
+                    total_collisions += any_i.get("collisions", 0)
                     mac_choices.append(any_i.get("chosen_mac", 0))
                     steps += 1
 
@@ -823,6 +867,7 @@ def step3_evaluate(pps_list, cp_dir, out_dir, log, deterministic_eval=True):
                     total_thr += any_i.get("throughput", 0)
                     total_delay += any_i.get("delay_ms", 0)
                     total_drops += any_i.get("drops", 0)
+                    total_collisions += any_i.get("collisions", 0)
                     mac_choices.append(any_i.get("chosen_mac", 0))
                     steps += 1
 
@@ -843,6 +888,7 @@ def step3_evaluate(pps_list, cp_dir, out_dir, log, deterministic_eval=True):
                 'Throughput_Mbps': round(avg_thr, 4),
                 'Delay_ms': round(avg_delay, 4),
                 'Drops': total_drops,
+                'Collisions': total_collisions,
                 'Dominant_MAC': dom_mac,
                 'TDMA_Share': round(tdma_count / total_count, 4),
                 'CSMA_Share': round(csma_count / total_count, 4),
@@ -1045,43 +1091,57 @@ def _ablation_rts_cts(eval_df, pps_list, cp_dir, abl_dir, log):
 
 
 def _ablation_reward_weights(eval_df, abl_dir, log):
-    """Analyze how different reward weight ratios would change agent preferences."""
-    log("\n  --- Ablation 5c: Reward Weights ---")
+    """Analyze how different 4-weight reward tuples affect agent ranking.
+
+    Uses all four normalised evaluation metrics (throughput, delay, drops,
+    collisions) with stable normalization bounds.
+    """
+    log("\n  --- Ablation 5c: Reward Weights (Throughput / Delay / Drops / Collisions) ---")
     if eval_df.empty:
         log("    No eval data. Skipping.")
         return
 
-    # For each weight combo, show the throughput/delay trade-off in the eval data
-    fig, ax = plt.subplots(figsize=(10, 5))
-
     max_thr = max(float(params.PHY_RATE_BPS) / 1e6, 1e-9)
-    for wt, wd in ABLATION_REWARD_WEIGHTS:
-        label = f"wT={wt}, wD={wd}"
-        # Compute weighted score per model
-        scores = []
+    all_scores = []
+
+    for wt, wd, wdr, wco in ABLATION_REWARD_WEIGHTS:
+        label = f"wT={wt} wD={wd} wDr={wdr} wCo={wco}"
         for model_name in eval_df['Model'].unique():
             sub = eval_df[eval_df['Model'] == model_name]
             avg_thr = sub['Throughput_Mbps'].mean()
             avg_delay = sub['Delay_ms'].mean()
-            score = wt * (avg_thr / max_thr) - wd * (avg_delay / 100.0)
-            scores.append({'Model': model_name, 'Score': score, 'Weights': label})
+            avg_drops = sub['Drops'].mean() if 'Drops' in sub.columns else 0
+            avg_cols = sub['Collisions'].mean() if 'Collisions' in sub.columns else 0
 
-        score_df = pd.DataFrame(scores)
-        ax.barh(
-            [f"{s['Model']} ({label})" for _, s in score_df.iterrows()],
-            score_df['Score'],
-            alpha=0.7,
-            label=label
-        )
+            score = (
+                + wt  * (avg_thr / max_thr)
+                - wd  * (avg_delay / DELAY_BOUND_MS)
+                - wdr * (avg_drops / DROP_BOUND)
+                - wco * (avg_cols / COLLISION_BOUND)
+            )
+            all_scores.append({
+                'Model': model_name,
+                'wT': wt, 'wD': wd, 'wDrop': wdr, 'wCol': wco,
+                'Score': round(score, 6),
+                'Weights': label,
+            })
 
-    ax.set_xlabel("Weighted Score")
-    ax.set_title("Ablation: Reward Weight Sensitivity")
+    score_df = pd.DataFrame(all_scores)
+    score_df.to_csv(os.path.join(abl_dir, "ablation_reward_weights.csv"), index=False)
+
+    # --- Plot: grouped bar chart ---
+    fig, ax = plt.subplots(figsize=(14, max(6, len(all_scores) * 0.22)))
+    labels = [f"{r['Model']} ({r['Weights']})" for _, r in score_df.iterrows()]
+    ax.barh(labels, score_df['Score'], alpha=0.75)
+    ax.set_xlabel("Weighted Utility Score")
+    ax.set_title("Ablation: Reward Weight Sensitivity\n"
+                 "(Throughput ↑, Delay ↓, Drops ↓, Collisions ↓)")
     ax.grid(True, alpha=0.3, axis='x')
     plt.tight_layout()
     plt.savefig(os.path.join(abl_dir, "ablation_reward_weights.png"), dpi=150)
     plt.close()
 
-    log(f"    Saved ablation_reward_weights.png")
+    log(f"    Saved ablation_reward_weights.csv + .png")
 
 
 def _ablation_fading(eval_df, pps_list, cp_dir, abl_dir, log):
@@ -1134,11 +1194,16 @@ def _ablation_fading(eval_df, pps_list, cp_dir, abl_dir, log):
     log(f"    Saved ablation_fading.csv + .png")
 
 
-def _oracle_from_baseline(baseline_df, pps_list):
-    """Compute reward-aware oracle from baseline results.
+def _best_static_baseline_by_weighted_utility(baseline_df, pps_list):
+    """Select the best static MAC baseline at each load using 4-term weighted utility.
 
-    Oracle picks TDMA/CSMA by maximizing throughput-delay utility,
-    aligned with MARL reward intent.
+    Compares only static baseline policies (TDMA vs. CSMA/CA) using the
+    same normalised shared reward terms as the RL agents:
+        utility = + wT·(thr/PHY) - wD·(delay/DELAY_BOUND)
+                  - wDr·(drops/DROP_BOUND) - wCo·(collisions/COLLISION_BOUND)
+
+    This is *not* an oracle or upper bound — it is a per-load best static
+    baseline selector for benchmarking.
     """
     rows = []
     max_thr = max(float(params.PHY_RATE_BPS) / 1e6, 1e-9)
@@ -1149,29 +1214,40 @@ def _oracle_from_baseline(baseline_df, pps_list):
         brow = brow.iloc[0]
         thr_tdma = brow['TDMA_Throughput_Mbps']
         thr_csma = brow['CSMA_Throughput_Mbps']
-        del_tdma = brow['TDMA_Delay_s'] * 1000  # convert to ms
+        del_tdma = brow['TDMA_Delay_s'] * 1000  # ms
         del_csma = brow['CSMA_Delay_s'] * 1000
+        drp_tdma = brow.get('TDMA_Drops', 0)
+        drp_csma = brow.get('CSMA_Drops', 0)
+        col_tdma = brow.get('TDMA_Collisions', 0)
+        col_csma = brow.get('CSMA_Collisions', 0)
 
-        score_tdma = MARLConfig.W_THROUGHPUT * (thr_tdma / max_thr) - MARLConfig.W_DELAY * (del_tdma / 100.0)
-        score_csma = MARLConfig.W_THROUGHPUT * (thr_csma / max_thr) - MARLConfig.W_DELAY * (del_csma / 100.0)
+        def _utility(thr, delay, drops, cols):
+            return (
+                + MARLConfig.W_THROUGHPUT  * (thr / max_thr)
+                - MARLConfig.W_DELAY       * (delay / DELAY_BOUND_MS)
+                - MARLConfig.W_DROPS       * (drops / DROP_BOUND)
+                - MARLConfig.W_COLLISIONS  * (cols / COLLISION_BOUND)
+            )
+
+        score_tdma = _utility(thr_tdma, del_tdma, drp_tdma, col_tdma)
+        score_csma = _utility(thr_csma, del_csma, drp_csma, col_csma)
 
         if score_tdma >= score_csma:
-            oracle_thr = thr_tdma
-            oracle_delay = del_tdma
-            oracle_mac = 'TDMA'
+            best_thr, best_delay, best_drops, best_cols = thr_tdma, del_tdma, drp_tdma, col_tdma
+            best_mac = 'TDMA'
         else:
-            oracle_thr = thr_csma
-            oracle_delay = del_csma
-            oracle_mac = 'CSMA'
+            best_thr, best_delay, best_drops, best_cols = thr_csma, del_csma, drp_csma, col_csma
+            best_mac = 'CSMA'
 
         rows.append({
-            'Model': 'Oracle',
-            'Type': 'ORACLE',
+            'Model': 'Weighted Best Static Baseline',
+            'Type': 'STATIC_BASELINE',
             'Offered_Load_pps': pps,
-            'Throughput_Mbps': round(oracle_thr, 4),
-            'Delay_ms': round(oracle_delay, 4),
-            'Drops': 0,
-            'Dominant_MAC': oracle_mac,
+            'Throughput_Mbps': round(best_thr, 4),
+            'Delay_ms': round(best_delay, 4),
+            'Drops': int(best_drops),
+            'Collisions': int(best_cols),
+            'Dominant_MAC': best_mac,
         })
     return pd.DataFrame(rows)
 
@@ -1184,13 +1260,14 @@ def step6_summary(eval_df, baseline_df, out_dir, log):
     log(" STEP 6: Summary Comparison Plots")
     log("="*60)
 
-    # --- Compute Oracle upper-bound from baseline ---
+    # --- Compute Weighted Best Static Baseline from baseline ---
+    _STATIC_BASELINE_LABEL = 'Weighted Best Static Baseline'
     if not baseline_df.empty:
         pps_list = sorted(eval_df['Offered_Load_pps'].unique()) if not eval_df.empty else []
-        oracle_df = _oracle_from_baseline(baseline_df, pps_list)
-        if not oracle_df.empty:
-            eval_df = pd.concat([eval_df, oracle_df], ignore_index=True)
-            log("  Added Oracle (Upper Bound) benchmark from baseline data.")
+        static_bl_df = _best_static_baseline_by_weighted_utility(baseline_df, pps_list)
+        if not static_bl_df.empty:
+            eval_df = pd.concat([eval_df, static_bl_df], ignore_index=True)
+            log(f"  Added {_STATIC_BASELINE_LABEL} benchmark from baseline data.")
 
     if eval_df.empty:
         log("  No evaluation data. Skipping.")
@@ -1200,21 +1277,20 @@ def step6_summary(eval_df, baseline_df, out_dir, log):
 
     # --- 6a: Throughput comparison ---
     fig, ax = plt.subplots(figsize=(12, 6))
-    # Baseline curves
     if not baseline_df.empty:
         ax.plot(baseline_df['Offered_Load_pps'], baseline_df['TDMA_Throughput_Mbps'],
                 'b--', label='TDMA (Baseline)', alpha=0.5, linewidth=1.5)
         ax.plot(baseline_df['Offered_Load_pps'], baseline_df['CSMA_Throughput_Mbps'],
                 'r--', label='CSMA/CA (Baseline)', alpha=0.5, linewidth=1.5)
 
-    # Oracle line (dark black, thick dashed)
-    oracle_sub = eval_df[eval_df['Model'] == 'Oracle']
-    if not oracle_sub.empty:
-        ax.plot(oracle_sub['Offered_Load_pps'], oracle_sub['Throughput_Mbps'],
-                'k--', linewidth=3, label='Oracle (Upper Bound)', zorder=10)
+    # Weighted Best Static Baseline line
+    bl_sub = eval_df[eval_df['Model'] == _STATIC_BASELINE_LABEL]
+    if not bl_sub.empty:
+        ax.plot(bl_sub['Offered_Load_pps'], bl_sub['Throughput_Mbps'],
+                'k--', linewidth=3, label=_STATIC_BASELINE_LABEL, zorder=10)
 
     # RL agent curves
-    rl_models = eval_df[eval_df['Model'] != 'Oracle']['Model'].unique()
+    rl_models = eval_df[eval_df['Model'] != _STATIC_BASELINE_LABEL]['Model'].unique()
     colors = sns.color_palette("husl", max(len(rl_models), 1)) if _HAS_SEABORN else plt.cm.tab10(np.linspace(0, 1, max(len(rl_models), 1)))
     for i, model_name in enumerate(rl_models):
         sub = eval_df[eval_df['Model'] == model_name]
@@ -1243,10 +1319,9 @@ def step6_summary(eval_df, baseline_df, out_dir, log):
         ax.plot(baseline_df['Offered_Load_pps'], baseline_df['CSMA_Delay_s'] * 1000,
                 'r--', label='CSMA/CA (Baseline)', alpha=0.5, linewidth=1.5)
 
-    # Oracle line (dark black, thick dashed)
-    if not oracle_sub.empty:
-        ax.plot(oracle_sub['Offered_Load_pps'], oracle_sub['Delay_ms'],
-                'k--', linewidth=3, label='Oracle (Upper Bound)', zorder=10)
+    if not bl_sub.empty:
+        ax.plot(bl_sub['Offered_Load_pps'], bl_sub['Delay_ms'],
+                'k--', linewidth=3, label=_STATIC_BASELINE_LABEL, zorder=10)
 
     for i, model_name in enumerate(rl_models):
         sub = eval_df[eval_df['Model'] == model_name]
@@ -1288,7 +1363,6 @@ def step6_summary(eval_df, baseline_df, out_dir, log):
     ax.set_xlim(0, 100)
     ax.axvline(50, color='gray', linestyle='--', alpha=0.5)
 
-    # Label TDMA% on each bar for quick reading.
     for i, pct in enumerate(tdma_pcts):
         ax.text(min(max(pct + 1.5, 1.5), 97), i, f"TDMA {pct:.1f}%", va='center', fontsize=8)
 
@@ -1311,7 +1385,8 @@ def step6_summary(eval_df, baseline_df, out_dir, log):
         "models_evaluated": list(eval_df['Model'].unique()),
         "num_load_points": int(eval_df['Offered_Load_pps'].nunique()),
     }
-    with open(os.path.join(out_dir, "csv", "experiment_summary.json"), 'w') as f:
+    summary_json_path = os.path.join(out_dir, "csv", "experiment_summary.json")
+    with open(summary_json_path, 'w') as f:
         json.dump(summary, f, indent=2)
     log("  Saved experiment_summary.json")
 
@@ -1331,6 +1406,17 @@ def run_unified_experiment(
     sweep_steps=None,
     stochastic_eval=False,
 ):
+    """Run the full unified SARL+MARL experiment pipeline.
+
+    All RL methods train and evaluate on the same MARLMacEnv using the
+    shared network-level cooperative reward.
+
+    Returns
+    -------
+    dict with keys:
+        out_dir, eval_csv, baseline_csv, summary_json,
+        images_dir, ablation_dir
+    """
     # Optional runtime overrides help avoid editing global config for quick what-if runs.
     if phy_rate_mbps is not None:
         params.PHY_RATE_BPS = float(phy_rate_mbps) * 1e6
@@ -1418,7 +1504,8 @@ def run_unified_experiment(
 
     # Step 1 — Baselines on MARL env (with mobility + fading)
     baseline_df = step1_baseline_marl(pps_list, params.SEED, log)
-    baseline_df.to_csv(os.path.join(out_dir, "csv", "baseline_results.csv"), index=False)
+    baseline_csv_path = os.path.join(out_dir, "csv", "baseline_results.csv")
+    baseline_df.to_csv(baseline_csv_path, index=False)
     generate_baseline_plots(
         baseline_df,
         out_dir,
@@ -1431,7 +1518,7 @@ def run_unified_experiment(
     )
     log("  Saved legacy baseline plots (throughput/delay/drops/collisions).")
 
-    # Step 2
+    # Step 2 — Unified training (shared reward semantics for all agents)
     cp_dir = step2_train(
         out_dir,
         sarl_ts,
@@ -1441,7 +1528,7 @@ def run_unified_experiment(
         use_checkpoints_only=use_checkpoints_only,
     )
 
-    # Step 3
+    # Step 3 — Evaluation (shared MARL env, exports Collisions alongside other metrics)
     eval_df = step3_evaluate(
         pps_list,
         cp_dir,
@@ -1460,6 +1547,7 @@ def run_unified_experiment(
     step4_reward_curves(out_dir, log)
 
     # Step 5
+    ablation_dir = os.path.join(out_dir, "ablation")
     step5_ablations(eval_df, pps_list, cp_dir, out_dir, log)
 
     # Step 6
@@ -1467,6 +1555,8 @@ def run_unified_experiment(
 
     # Upload key artifacts to wandb
     csv_dir_path = os.path.join(out_dir, "csv")
+    eval_csv_path = os.path.join(csv_dir_path, "unified_eval_sweep.csv")
+    summary_json_path = os.path.join(csv_dir_path, "experiment_summary.json")
     for csv_file in ["baseline_results.csv", "unified_eval_sweep.csv", "experiment_summary.json"]:
         wandb_artifact(os.path.join(csv_dir_path, csv_file), artifact_type="result")
     img_dir_path = os.path.join(out_dir, "images")
@@ -1478,6 +1568,16 @@ def run_unified_experiment(
 
     print_banner("UNIFIED EXPERIMENT COMPLETED SUCCESSFULLY", f"Results: {out_dir}")
     log(f"Results: {out_dir}")
+
+    # Return artifact paths for programmatic use (e.g. Optuna trials)
+    return {
+        "out_dir": out_dir,
+        "eval_csv": eval_csv_path,
+        "baseline_csv": baseline_csv_path,
+        "summary_json": summary_json_path,
+        "images_dir": img_dir_path,
+        "ablation_dir": ablation_dir,
+    }
 
 
 if __name__ == '__main__':
