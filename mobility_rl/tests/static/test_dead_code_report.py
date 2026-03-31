@@ -22,8 +22,9 @@ def test_generate_dead_code_report(project_root, mock_results_dir):
     
     report_path = os.path.join(mock_results_dir, "dead_code_report.txt")
     
-    # We pass the target directories to the Vulture CLI tool
-    cmd = ["vulture"] + target_dirs
+    # We pass the target directories to the Vulture CLI tool using python -m
+    # to completely bypass any Linux $PATH variable issues with virtualenvs
+    cmd = [sys.executable, "-m", "vulture"] + target_dirs
     
     try:
         # Vulture exits with 1 if it finds dead code, which is expected.
