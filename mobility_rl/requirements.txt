@@ -14,3 +14,4 @@ wandb
 rich
 tqdm
 optuna
+pytest
