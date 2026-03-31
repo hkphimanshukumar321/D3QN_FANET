@@ -13,7 +13,7 @@ class MARLConfig:
     # --------------------------------------------------
     # Training Hyperparameters
     # --------------------------------------------------
-    EPISODES = 500
+    EPISODES = 2000
     MAX_STEPS_PER_EP = 100     # Steps per episode
     BATCH_SIZE = 64
     REPLAY_SIZE = 50000
