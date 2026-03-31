@@ -34,7 +34,9 @@ def monitor_sweep():
         "a2c": 2
     }
 
-    base_dir = os.path.join("results", "optuna")
+    # Resolve project root from this script's location (utils/monitor_sweep.py -> project root)
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    base_dir = os.path.join(project_root, "results", "optuna")
 
     print("=" * 60)
     print("  LIVE OPTUNA SWEEP TRACKER (Ctrl+C to exit)")
