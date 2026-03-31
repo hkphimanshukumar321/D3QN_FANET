@@ -125,6 +125,7 @@ def get_git_hash():
 
 def make_dirs(N, phy_rate_bps, QMAX, rts_cts, ack):
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    pid = os.getpid()
     phy_m = int(phy_rate_bps / 1e6)
     cfg_name = f"N{N}_PHY{phy_m}M_Q{QMAX}"
     if rts_cts and ack:
@@ -132,8 +133,8 @@ def make_dirs(N, phy_rate_bps, QMAX, rts_cts, ack):
     elif ack:
         cfg_name += "_ACK_enabled"
 
-    base = os.path.join(project_root, "results", cfg_name, f"trial_UNIFIED_{ts}")
-    for sub in ["images", "csv", "logs", "ablation"]:
+    base = os.path.join(project_root, "results", cfg_name, f"trial_UNIFIED_{ts}_pid{pid}")
+    for sub in ["images", "csv", "logs", "ablation", "checkpoints"]:
         os.makedirs(os.path.join(base, sub), exist_ok=True)
     return base
 
@@ -636,7 +637,8 @@ def step2_train(
     log(" STEP 2: Unified Training (All agents on MARL env)")
     log("="*60)
 
-    cp_dir = os.path.join(project_root, "results", "checkpoints_unified")
+    # Store checkpoints inside the unique output directory to prevent parallel trials from overwriting
+    cp_dir = os.path.join(out_dir, "checkpoints")
     os.makedirs(cp_dir, exist_ok=True)
     csv_dir = os.path.join(out_dir, "csv")
 
@@ -735,10 +737,12 @@ def step3_evaluate(pps_list, cp_dir, out_dir, log, deterministic_eval=True):
     N = params.N
     obs_dim = MARLConfig.OBS_DIM
 
-    for name, cls, fname in [
-        ("IQL", IQLAgent, "unified_iql_model.pth"),
-        ("VDN", VDNAgent, "unified_vdn_model.pth"),
+    for name, cls, fname, run_flag in [
+        ("IQL", IQLAgent, "unified_iql_model.pth", "RUN_MARL_IQL"),
+        ("VDN", VDNAgent, "unified_vdn_model.pth", "RUN_MARL_VDN"),
     ]:
+        if not getattr(params, run_flag, True):
+            continue
         path = os.path.join(cp_dir, fname)
         if os.path.exists(path):
             agent = cls(N, obs_dim, 2)
@@ -747,22 +751,24 @@ def step3_evaluate(pps_list, cp_dir, out_dir, log, deterministic_eval=True):
             log(f"  Loaded MARL: {name}")
 
     # QMIX uses a dict checkpoint (q_net + mixer), needs embed_dim
-    qmix_path = os.path.join(cp_dir, "unified_qmix_model.pth")
-    if os.path.exists(qmix_path):
-        agent = QMIXAgent(N, obs_dim, 2, embed_dim=MARLConfig.QMIX_EMBED_DIM)
-        agent.load(qmix_path)
-        models["QMIX"] = ('marl', agent)
-        log(f"  Loaded MARL: QMIX")
+    if getattr(params, "RUN_MARL_QMIX", True):
+        qmix_path = os.path.join(cp_dir, "unified_qmix_model.pth")
+        if os.path.exists(qmix_path):
+            agent = QMIXAgent(N, obs_dim, 2, embed_dim=MARLConfig.QMIX_EMBED_DIM)
+            agent.load(qmix_path)
+            models["QMIX"] = ('marl', agent)
+            log(f"  Loaded MARL: QMIX")
 
-    gnn_path = os.path.join(cp_dir, "unified_gnn_marl_model.pth")
-    if os.path.exists(gnn_path):
-        from algorithms.rl.gnn_marl import MAGAT_D3QN_QNetwork
-        device = torch.device("cpu")
-        gnn = MAGAT_D3QN_QNetwork(node_in_dim=obs_dim, hidden_dim=64, num_actions=2, heads=4).to(device)
-        gnn.load_state_dict(torch.load(gnn_path, map_location=device))
-        gnn.eval()
-        models["MAGAT-D3QN"] = ('marl_gnn', gnn)
-        log(f"  Loaded MARL: MAGAT-D3QN")
+    if getattr(params, "RUN_MARL_GNN", True):
+        gnn_path = os.path.join(cp_dir, "unified_gnn_marl_model.pth")
+        if os.path.exists(gnn_path):
+            from algorithms.rl.gnn_marl import MAGAT_D3QN_QNetwork
+            device = torch.device("cpu")
+            gnn = MAGAT_D3QN_QNetwork(node_in_dim=obs_dim, hidden_dim=64, num_actions=2, heads=4).to(device)
+            gnn.load_state_dict(torch.load(gnn_path, map_location=device))
+            gnn.eval()
+            models["MAGAT-D3QN"] = ('marl_gnn', gnn)
+            log(f"  Loaded MARL: MAGAT-D3QN")
 
     if not models:
         log("  WARNING: No models found. Skipping evaluation.")

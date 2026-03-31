@@ -213,6 +213,16 @@ def create_objective(
         if gpu_ids is not None:
             os.environ["CUDA_VISIBLE_DEVICES"] = gpu_ids
 
+        # --- GPU memory safety for parallel studies ---
+        try:
+            import torch
+            if torch.cuda.is_available():
+                # Cap each process to 30% of VRAM so multiple parallel
+                # Optuna studies can share the same GPU safely.
+                torch.cuda.set_per_process_memory_fraction(0.3, device=0)
+        except Exception:
+            pass  # CPU-only or older PyTorch — no-op
+
         try:
             # =========================================================
             # 1. Sample reward weights (two-stage)
@@ -301,6 +311,30 @@ def create_objective(
             RLConfig.REWARD_W_FAILURES = wDrop
             RLConfig.REWARD_W_JITTER = wCol
 
+            # Only train the algorithm being tuned by Optuna to save time
+            from configs import config as params
+            orig_run_flags = {
+                "RUN_TABULAR_QLEARNING": getattr(params, "RUN_TABULAR_QLEARNING", True),
+                "RUN_DQN": getattr(params, "RUN_DQN", True),
+                "RUN_PPO": getattr(params, "RUN_PPO", True),
+                "RUN_A2C": getattr(params, "RUN_A2C", True),
+                "RUN_CUSTOM_RL": getattr(params, "RUN_CUSTOM_RL", True),
+                "RUN_MARL_IQL": getattr(params, "RUN_MARL_IQL", True),
+                "RUN_MARL_VDN": getattr(params, "RUN_MARL_VDN", True),
+                "RUN_MARL_QMIX": getattr(params, "RUN_MARL_QMIX", True),
+                "RUN_MARL_GNN": getattr(params, "RUN_MARL_GNN", True),
+            }
+
+            params.RUN_TABULAR_QLEARNING = (algo_cli == "tabular")
+            params.RUN_DQN = (algo_cli == "dqn")
+            params.RUN_PPO = (algo_cli == "ppo")
+            params.RUN_A2C = (algo_cli == "a2c")
+            params.RUN_CUSTOM_RL = (algo_cli == "mca_d3qn")
+            params.RUN_MARL_IQL = (algo_cli == "iql")
+            params.RUN_MARL_VDN = (algo_cli == "vdn")
+            params.RUN_MARL_QMIX = (algo_cli == "qmix")
+            params.RUN_MARL_GNN = (algo_cli == "magat_d3qn")
+
             # Run the inner experiment
             from experiments.run_unified_experiment import run_unified_experiment
 
@@ -322,11 +356,13 @@ def create_objective(
 
             result = run_unified_experiment(**run_kwargs)
 
-            # Restore original configs (MARL + SARL)
+            # Restore original configs (MARL + SARL + run flags)
             for k, v in orig_marl.items():
                 setattr(MARLConfig, k, v)
             for k, v in orig_sarl.items():
                 setattr(RLConfig, k, v)
+            for k, v in orig_run_flags.items():
+                setattr(params, k, v)
 
             # =========================================================
             # 4. Aggregate metrics from eval CSV
