@@ -61,12 +61,13 @@ launch_workers "iql" 20 4
 
 # --- SARL Algorithms (Light Compute) ---
 launch_workers "dqn" 48 2
+launch_workers "mca_d3qn" 48 2
 launch_workers "ppo" 48 2
 launch_workers "a2c" 48 2
 
 echo ""
 echo "============================================================"
-echo "  ALL 22 PYTHON PROCESSES LAUNCHED AND DETACHED!"
+echo "  ALL 24 PYTHON PROCESSES LAUNCHED AND DETACHED!"
 echo "============================================================"
 echo "You can safely close this SSH session."
 echo ""
