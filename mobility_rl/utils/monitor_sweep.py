@@ -7,7 +7,7 @@ from datetime import timedelta
 def monitor_sweep():
     """
     Connects to the Optuna SQLite databases to track the global progress.
-    Calculates accurate collective ETAs based on parallel n-jobs workers.
+    Shows real-time status even before any trials complete.
     """
     
     # Target trials per algorithm
@@ -22,8 +22,7 @@ def monitor_sweep():
         "full_v100_sweep_a2c": 48
     }
 
-    # Knowing how many background processes we launched per algo lets us 
-    # perfectly calculate the remaining wall-clock time.
+    # Workers per algo (for wall-clock ETA calculation)
     workers_count = {
         "magat_d3qn": 4,
         "qmix": 4,
@@ -35,78 +34,109 @@ def monitor_sweep():
         "a2c": 2
     }
 
-    print("======================================================")
+    base_dir = os.path.join("results", "optuna")
+
+    print("=" * 60)
     print("  LIVE OPTUNA SWEEP TRACKER (Ctrl+C to exit)")
-    print("  Calculating true collective global ETA...")
-    print("======================================================\n")
-    
-    bars = {}
+    print("  Refreshes every 30 seconds")
+    print("=" * 60)
     
     try:
         while True:
-            max_eta_seconds = 0
+            os.system("clear" if os.name != "nt" else "cls")
+            print("=" * 60)
+            print("  OPTUNA SWEEP STATUS")
+            print("  " + time.strftime("%Y-%m-%d %H:%M:%S"))
+            print("=" * 60)
             
+            max_eta_seconds = 0
+            total_completed = 0
+            total_target = sum(targets.values())
+            any_db_found = False
+
             for study_name, target in targets.items():
-                db_path = os.path.join("results", "optuna", study_name, f"{study_name}.db")
-                storage_url = f"sqlite:///{db_path}"
+                algo_name = study_name.replace("full_v100_sweep_", "").upper()
+                db_path = os.path.join(base_dir, study_name, f"{study_name}.db")
                 
-                # Check DB exists
                 if not os.path.exists(db_path):
+                    print(f"  {algo_name:<12} | DB not created yet (waiting to start...)")
                     continue
-                    
+                
+                any_db_found = True
+                
                 try:
-                    # Load the study quietly
                     optuna.logging.set_verbosity(optuna.logging.ERROR)
-                    study = optuna.load_study(study_name=study_name, storage=storage_url)
+                    study = optuna.load_study(study_name=study_name, storage=f"sqlite:///{db_path}")
                     
-                    # Count fully completed trials
-                    completed_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
-                    completed_count = len(completed_trials)
+                    completed = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+                    running = [t for t in study.trials if t.state == optuna.trial.TrialState.RUNNING]
+                    failed = [t for t in study.trials if t.state == optuna.trial.TrialState.FAIL]
                     
-                    algo_name = study_name.replace("full_v100_sweep_", "")
+                    n_done = len(completed)
+                    n_run = len(running)
+                    n_fail = len(failed)
+                    total_completed += n_done
                     
-                    # --- CALCULATE PREDICTIVE ETA ---
-                    remaining_trials = target - completed_count
-                    if remaining_trials > 0 and completed_count > 0:
-                        # Grab the average duration of the last 5 successful trials for high accuracy
-                        recent = completed_trials[-5:]
-                        avg_duration = sum((t.datetime_complete - t.datetime_start).total_seconds() for t in recent) / len(recent)
-                        
-                        # Divide duration by identical parallel workers
-                        n_jobs = workers_count.get(algo_name, 1)
-                        study_eta = (remaining_trials / n_jobs) * avg_duration
-                        
+                    # Progress bar using simple characters
+                    bar_len = 20
+                    filled = int(bar_len * n_done / target) if target > 0 else 0
+                    bar = "█" * filled + "░" * (bar_len - filled)
+                    
+                    status_parts = [f"{n_done}/{target} done"]
+                    if n_run > 0:
+                        status_parts.append(f"{n_run} running")
+                    if n_fail > 0:
+                        status_parts.append(f"{n_fail} failed")
+                    
+                    # ETA calculation
+                    algo_key = study_name.replace("full_v100_sweep_", "")
+                    remaining = target - n_done
+                    eta_str = ""
+                    if remaining > 0 and n_done > 0:
+                        recent = completed[-5:]
+                        avg_s = sum((t.datetime_complete - t.datetime_start).total_seconds() for t in recent) / len(recent)
+                        n_jobs = workers_count.get(algo_key, 1)
+                        study_eta = (remaining / n_jobs) * avg_s
                         if study_eta > max_eta_seconds:
                             max_eta_seconds = study_eta
-
-                    # --- UPDATE TQDM BARS ---
-                    if study_name not in bars:
-                        bars[study_name] = tqdm(total=target, desc=f"{algo_name.upper():<10}", position=len(bars), leave=True)
-                        bars[study_name].update(completed_count)
-                    else:
-                        current_val = bars[study_name].n
-                        if completed_count > current_val:
-                            bars[study_name].update(completed_count - current_val)
-                            
-                except Exception:
-                    pass
-            
-            # Print the Net Global ETA without messing up the tqdm bar stack
-            if max_eta_seconds > 0:
-                global_eta = timedelta(seconds=int(max_eta_seconds))
-                days = global_eta.days
-                hours, remainder = divmod(global_eta.seconds, 3600)
-                minutes, _ = divmod(remainder, 60)
-                
-                tqdm.write(f"\r[GLOBAL SWEEP ETA] Net Total Time Left: {days} Days, {hours} Hours, {minutes} Minutes    ", end="")
-            elif len(bars) > 0 and all(bars[s].n == targets[s] for s in bars):
-                tqdm.write("\r[GLOBAL SWEEP ETA] ★ ALL TRIALS COMPLETED! ★                               ", end="")
+                        eta_td = timedelta(seconds=int(study_eta))
+                        eta_str = f" | ETA: {eta_td}"
+                    elif remaining > 0 and n_run > 0:
+                        eta_str = " | ETA: calculating..."
+                    elif remaining == 0:
+                        eta_str = " | ★ DONE!"
                     
-            # Refresh every 30 seconds
+                    print(f"  {algo_key.upper():<12} |{bar}| {', '.join(status_parts)}{eta_str}")
+                    
+                except Exception as e:
+                    print(f"  {algo_name:<12} | Error reading DB: {str(e)[:40]}")
+            
+            # Global summary
+            print("-" * 60)
+            pct = (total_completed / total_target * 100) if total_target > 0 else 0
+            print(f"  TOTAL PROGRESS: {total_completed}/{total_target} trials ({pct:.1f}%)")
+            
+            if max_eta_seconds > 0:
+                g = timedelta(seconds=int(max_eta_seconds))
+                days = g.days
+                hours, rem = divmod(g.seconds, 3600)
+                minutes, _ = divmod(rem, 60)
+                print(f"  NET TIME LEFT:  {days} Days, {hours} Hours, {minutes} Minutes")
+            elif total_completed == total_target and any_db_found:
+                print("  ★ ALL TRIALS COMPLETED! ★")
+            elif not any_db_found:
+                print("  Waiting for first database to be created...")
+                print(f"  Looking in: {os.path.abspath(base_dir)}")
+            else:
+                print("  NET TIME LEFT:  Calculating after first trial completes...")
+            
+            print("=" * 60)
+            print("  Press Ctrl+C to exit (sweep continues in background)")
+            
             time.sleep(30)
             
     except KeyboardInterrupt:
-        print("\n\nExiting monitor. The background sweep is still running safely!")
+        print("\n\nExiting monitor. Background sweep still running safely!")
 
 if __name__ == "__main__":
     monitor_sweep()
