@@ -10,6 +10,13 @@
 
 set -e
 
+# --- CRITICAL CPU OPTIMIZATION ---
+# 24 processes * 4 threads = 96 cores perfectly saturated.
+# Without this, PyTorch tries to spawn 96 threads per process -> 2300 overlapping threads fighting!
+export OMP_NUM_THREADS=4
+export MKL_NUM_THREADS=4
+export OPENBLAS_NUM_THREADS=4
+
 STUDY_NAME="full_v100_sweep"
 SEED=42
 GPU_ID=0

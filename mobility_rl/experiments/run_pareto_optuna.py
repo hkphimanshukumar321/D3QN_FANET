@@ -47,6 +47,36 @@ import matplotlib.pyplot as plt
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, project_root)
 
+# --- DYNAMIC GPU MEMORY GUARD ---
+# Instead of a rigid hard cap that wastes GPU when few processes are active,
+# we use a runtime check: before each trial, verify there is enough free VRAM.
+# If another student or process has filled the GPU, we wait and retry.
+import torch
+
+GPU_MIN_FREE_MB = 2048  # Require at least 2GB free before starting a trial
+
+def wait_for_gpu(device_id=0, min_free_mb=GPU_MIN_FREE_MB, max_wait_s=600):
+    """Block until the GPU has enough free VRAM to safely start a trial.
+    
+    Returns True if GPU is ready, False if timed out.
+    """
+    if not torch.cuda.is_available():
+        return True
+    waited = 0
+    while waited < max_wait_s:
+        torch.cuda.empty_cache()
+        free, total = torch.cuda.mem_get_info(device_id)
+        free_mb = free / (1024 ** 2)
+        total_mb = total / (1024 ** 2)
+        if free_mb >= min_free_mb:
+            return True
+        print(f"[GPU GUARD] Only {free_mb:.0f}/{total_mb:.0f} MB free. "
+              f"Need {min_free_mb} MB. Waiting 30s... ({waited}s/{max_wait_s}s)")
+        time.sleep(30)
+        waited += 30
+    print(f"[GPU GUARD] WARNING: Timed out after {max_wait_s}s. Proceeding anyway.")
+    return False
+
 import optuna
 
 # Wandb integration — gracefully no-op if unavailable
@@ -213,15 +243,10 @@ def create_objective(
         if gpu_ids is not None:
             os.environ["CUDA_VISIBLE_DEVICES"] = gpu_ids
 
-        # --- GPU memory safety for parallel studies ---
-        try:
-            import torch
-            if torch.cuda.is_available():
-                # Cap each process to 30% of VRAM so multiple parallel
-                # Optuna studies can share the same GPU safely.
-                torch.cuda.set_per_process_memory_fraction(0.3, device=0)
-        except Exception:
-            pass  # CPU-only or older PyTorch — no-op
+        # --- Dynamic GPU memory guard ---
+        # Wait until at least 2GB free VRAM is available before training.
+        # Uses full GPU power when free, throttles when crowded.
+        wait_for_gpu(device_id=0)
 
         try:
             # =========================================================
