@@ -16,9 +16,9 @@ SEED = 42                                     # Random seed baseline
 # ==========================================
 # Experiment Sweep Settings (Load)
 # ==========================================
-SWEEP_MIN_PPS = 100                           # Minimum total traffic load (packets/sec)
-SWEEP_MAX_PPS = 1500                          # Maximum total traffic load (packets/sec)
-SWEEP_STEPS = 30                               # Number of granular steps in the sweep
+SWEEP_MIN_PPS = 50                           # Minimum total traffic load (packets/sec)
+SWEEP_MAX_PPS = 1000                          # Maximum total traffic load (packets/sec)
+SWEEP_STEPS = 20                               # Number of granular steps in the sweep
 
 # ==========================================
 # Traffic Generation Model
@@ -68,7 +68,7 @@ RL_EPSILON = 0.0      # 0.0 = never randomly explore
 RL_WT = 0.5           # match MARL_Config.W_THROUGHPUT
 RL_WD = 0.1           # match MARL_Config.W_DELAY
 RL_STATE_MODE = "traffic_rate_bin"
-RL_TRAFFIC_BINS = 30  # Needs to match SWEEP_STEPS exactly so each traffic load point gets its own bin
+RL_TRAFFIC_BINS = 20  # Needs to match SWEEP_STEPS exactly so each traffic load point gets its own bin
 
 # ==========================================
 # 3D Mobility Parameters

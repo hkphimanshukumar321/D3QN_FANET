@@ -29,11 +29,11 @@ class MARLConfig:
     # --------------------------------------------------
     # Reward Weights
     # --------------------------------------------------
-    W_THROUGHPUT = 0.3
-    W_DELAY = 0.05
-    W_DROPS = 0.4
-    W_COLLISIONS = 0.3
-    W_LINK_UTIL = 0.1
+    W_THROUGHPUT = 0.35
+    W_DELAY = 0.15
+    W_DROPS = 0.25
+    W_COLLISIONS = 0.25
+    W_LINK_UTIL = 0.0
 
     # --------------------------------------------------
     # QMIX-specific

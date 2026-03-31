@@ -26,10 +26,10 @@ class RLConfig:
     # Reward Weights (MCA-D3QN)
     # Rt = w_T*T^ - w_D*D^ - w_F*F^ - w_J*J^
     # ----------------------------------------------------
-    REWARD_W_THROUGHPUT = 0.5      # MATCH MARL W_THROUGHPUT
-    REWARD_W_DELAY = 0.1           # MATCH MARL W_DELAY
-    REWARD_W_FAILURES = 0.3        # MATCH MARL W_DROPS
-    REWARD_W_JITTER = 0.2          # MATCH MARL W_COLLISIONS
+    REWARD_W_THROUGHPUT = 0.35      # MATCH MARL W_THROUGHPUT
+    REWARD_W_DELAY = 0.15           # MATCH MARL W_DELAY
+    REWARD_W_FAILURES = 0.25        # MATCH MARL W_DROPS
+    REWARD_W_JITTER = 0.25          # MATCH MARL W_COLLISIONS
     
     # ----------------------------------------------------
     # Training Hyperparameters Default 
