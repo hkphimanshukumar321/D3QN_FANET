@@ -65,8 +65,8 @@ RL_DECISION_INTERVAL_S = 1.0  # seconds between RL MAC selection queries
 RL_ALPHA = 1.0        # 1.0 = instant learning of the current best observation
 RL_GAMMA = 0.0        # 0.0 = independent points, no future discounting (it's a static CSV sweep)
 RL_EPSILON = 0.0      # 0.0 = never randomly explore
-RL_WT = 0.5           # match MARL_Config.W_THROUGHPUT
-RL_WD = 0.1           # match MARL_Config.W_DELAY
+RL_WT = 0.35          # match MARL_Config.W_THROUGHPUT
+RL_WD = 0.15          # match MARL_Config.W_DELAY
 RL_STATE_MODE = "traffic_rate_bin"
 RL_TRAFFIC_BINS = 20  # Needs to match SWEEP_STEPS exactly so each traffic load point gets its own bin
 
