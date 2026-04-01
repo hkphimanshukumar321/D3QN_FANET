@@ -470,6 +470,7 @@ def _train_marl_worker(kwargs):
     # --- MAGAT-D3QN (separate GNN training) ---
     if algo == 'magat_d3qn':
         from algorithms.rl.gnn_marl import MAGAT_D3QN_QNetwork
+        from torch_geometric.data import Data, Batch
         import random, math
         from collections import deque
 
@@ -489,6 +490,10 @@ def _train_marl_worker(kwargs):
         ep_rewards = []
 
         wb_logger = WandbMARLLogger(algo_name="magat_d3qn")
+        
+        target_update_interval = MARLConfig.TARGET_UPDATE_FREQ if hasattr(MARLConfig, 'TARGET_UPDATE_FREQ') else 1000
+        global_step = 0
+
         for ep in tqdm(range(episodes), desc="MAGAT-D3QN", unit="ep"):
             obs, _ = env.reset()
             x, edge_index = env.get_global_graph_state()
@@ -499,6 +504,7 @@ def _train_marl_worker(kwargs):
             policy_net.reset_memory()
 
             while env.agents:
+                global_step += 1
                 x_t = torch.tensor(x, dtype=torch.float32).to(device)
                 edge_t = torch.tensor(edge_index, dtype=torch.long).to(device)
 
@@ -524,32 +530,47 @@ def _train_marl_worker(kwargs):
 
                 x, edge_index = next_x, next_ei
 
-                if len(memory) > batch_size:
+                # OPTIMIZATION: Train only every 4 steps (train_freq=4) to drastically slash overhead
+                if len(memory) > batch_size and global_step % 4 == 0:
                     batch = random.sample(memory, batch_size)
-                    losses = []
+                    
+                    data_list = []
+                    next_data_list = []
                     for (bx, bei, ba, br, bnx, bnei, bd) in batch:
-                        bxt = torch.tensor(bx, dtype=torch.float32).to(device)
-                        bet = torch.tensor(bei, dtype=torch.long).to(device)
-                        bnxt = torch.tensor(bnx, dtype=torch.float32).to(device)
-                        bnet = torch.tensor(bnei, dtype=torch.long).to(device)
+                        bxt = torch.tensor(bx, dtype=torch.float32)
+                        bet = torch.tensor(bei, dtype=torch.long)
+                        bnxt = torch.tensor(bnx, dtype=torch.float32)
+                        bnet = torch.tensor(bnei, dtype=torch.long)
                         
-                        # We must reset isolated GRU memory for shuffled, non-sequential random samples
-                        policy_net.reset_memory()
-                        q_all = policy_net(bxt, bet)
-                        q_a = q_all[range(len(ba)), ba]
+                        data_list.append(Data(x=bxt, edge_index=bet, action=torch.tensor(ba, dtype=torch.long),
+                                              reward=torch.tensor([br], dtype=torch.float32),
+                                              done=torch.tensor([bd], dtype=torch.float32)))
+                        next_data_list.append(Data(x=bnxt, edge_index=bnet))
                         
-                        with torch.no_grad():
-                            target_net.reset_memory()
-                            q_next = target_net(bnxt, bnet).max(1)[0]
-                            target = br + gamma * q_next * (1 - int(bd))
+                    # OPTIMIZATION: PyTorch Geometric native batching reduces 64 forward passes to 1
+                    batch_data = Batch.from_data_list(data_list).to(device)
+                    next_batch_data = Batch.from_data_list(next_data_list).to(device)
+                    
+                    policy_net.reset_memory()
+                    q_all = policy_net(batch_data.x, batch_data.edge_index)  # Shape: (Batch * N, Num_Actions)
+                    
+                    with torch.no_grad():
+                        target_net.reset_memory()
+                        q_next = target_net(next_batch_data.x, next_batch_data.edge_index).max(1)[0] # Shape: (Batch * N,)
                         
-                        losses.append(torch.nn.functional.mse_loss(q_a, target))
-                    loss = torch.stack(losses).mean()
+                    actions_tensor = batch_data.action # Shape: (Batch * N,)
+                    q_a = q_all[torch.arange(q_all.size(0)), actions_tensor]
+                    
+                    # Expand the graph-level scalar reward & done to match N agents per graph map
+                    block_map = batch_data.batch
+                    target = batch_data.reward[block_map] + gamma * q_next * (1 - batch_data.done[block_map])
+                    
+                    loss = torch.nn.functional.mse_loss(q_a, target)
                     optimizer.zero_grad()
                     loss.backward()
                     optimizer.step()
 
-                if ep % 100 == 0 and env.agents:
+                if global_step % target_update_interval == 0:
                     target_net.load_state_dict(policy_net.state_dict())
 
             ep_rewards.append(ep_reward)
