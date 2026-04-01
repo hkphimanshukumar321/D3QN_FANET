@@ -608,12 +608,15 @@ def _train_marl_worker(kwargs):
 
     wb_logger = WandbMARLLogger(algo_name=algo)
     ep_rewards = []
+    global_step = 0
+    
     for ep in tqdm(range(episodes), desc=algo.upper(), unit="ep"):
         obs_dict, _ = env.reset()
         obs_all = np.stack([obs_dict[a] for a in env.possible_agents])
         ep_reward = 0.0
 
         while env.agents:
+            global_step += 1
             actions_list = agent.select_actions(obs_all)
             actions_dict = {a: actions_list[i] for i, a in enumerate(env.agents)}
             next_obs_dict, rewards, terms, truncs, infos = env.step(actions_dict)
@@ -621,7 +624,11 @@ def _train_marl_worker(kwargs):
             next_obs_all = np.stack([next_obs_dict[a] for a in env.possible_agents])
             done = terms[env.possible_agents[0]] if env.possible_agents[0] in terms else True
             agent.store(obs_all, actions_list, r, next_obs_all, done)
-            agent.update()
+            
+            # OPTIMIZATION: Train only every 4 steps (train_freq=4) to drastically slash overhead
+            if global_step % 4 == 0:
+                agent.update()
+                
             obs_all = next_obs_all
             ep_reward += r
 
