@@ -86,7 +86,8 @@ def monitor_sweep():
                     
                     status_parts = [f"{n_done}/{target} done"]
                     if n_run > 0:
-                        status_parts.append(f"{n_run} running")
+                        run_ids = [str(t.number) for t in running]
+                        status_parts.append(f"{n_run} running (T#{','.join(run_ids)})")
                     if n_fail > 0:
                         status_parts.append(f"{n_fail} failed")
                     
