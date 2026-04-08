@@ -19,19 +19,44 @@ class MAGAT_D3QN_QNetwork(nn.Module):
     - heads: number of attention heads for GAT layers.
     """
 
-    def __init__(self, node_in_dim=8, hidden_dim=64, num_actions=2, heads=4):
+    def __init__(
+        self,
+        node_in_dim=8,
+        hidden_dim=64,
+        num_actions=2,
+        heads=4,
+        use_graph=True,
+        use_attention=True,
+        use_gru=True,
+        use_burst_history=True,
+    ):
         super(MAGAT_D3QN_QNetwork, self).__init__()
+        self.use_graph = use_graph
+        self.use_attention = use_attention
+        self.use_gru = use_gru
+        self.use_burst_history = use_burst_history
 
-        # 1. Multi-Head Graph Attention Layers
-        self.conv1 = GATConv(node_in_dim, hidden_dim, heads=heads, concat=True)
-        self.conv2 = GATConv(hidden_dim * heads, hidden_dim, heads=1, concat=False)
+        # 1. Spatial encoder
+        if self.use_graph and self.use_attention:
+            self.conv1 = GATConv(node_in_dim, hidden_dim, heads=heads, concat=True)
+            self.conv2 = GATConv(hidden_dim * heads, hidden_dim, heads=1, concat=False)
+            self.pre_mlp = None
+            self.post_mlp = None
+        else:
+            self.conv1 = None
+            self.conv2 = None
+            self.pre_mlp = nn.Linear(node_in_dim, hidden_dim)
+            self.post_mlp = nn.Linear(hidden_dim, hidden_dim)
 
         # 2. Recurrent Memory Block (GRU) for Temporal Dependency
-        self.memory_block = nn.GRU(
-            input_size=hidden_dim,
-            hidden_size=hidden_dim,
-            batch_first=True
-        )
+        if self.use_gru:
+            self.memory_block = nn.GRU(
+                input_size=hidden_dim,
+                hidden_size=hidden_dim,
+                batch_first=True
+            )
+        else:
+            self.memory_block = None
 
         # Persistent hidden state for temporal memory across environment steps
         self.hidden_state = None
@@ -86,22 +111,44 @@ class MAGAT_D3QN_QNetwork(nn.Module):
                 dtype=x.dtype
             )
 
-    def forward(self, x, edge_index):
-        # Apply Multi-Head Attention Spatial Encoders
-        x = self.conv1(x, edge_index)
-        x = F.elu(x)
-        x = self.conv2(x, edge_index)
-        x = F.elu(x)
+    def _edge_aggregate(self, x, edge_index):
+        if edge_index.numel() == 0:
+            return x
+        src, dst = edge_index
+        agg = torch.zeros_like(x)
+        agg.index_add_(0, dst, x[src])
+        deg = torch.zeros(x.size(0), dtype=x.dtype, device=x.device)
+        deg.index_add_(0, dst, torch.ones(dst.size(0), dtype=x.dtype, device=x.device))
+        deg = deg.clamp(min=1.0).unsqueeze(-1)
+        return x + agg / deg
+
+    def forward(self, x, edge_index, alive_mask=None):
+        if not self.use_burst_history and x.size(-1) >= 24:
+            x = x.clone()
+            x[:, 21:24] = 0.0
+
+        # Apply spatial encoder
+        if self.use_graph and self.use_attention:
+            x = self.conv1(x, edge_index)
+            x = F.elu(x)
+            x = self.conv2(x, edge_index)
+            x = F.elu(x)
+        else:
+            x = F.relu(self.pre_mlp(x))
+            if self.use_graph:
+                x = self._edge_aggregate(x, edge_index)
+            x = F.relu(self.post_mlp(x))
 
         # Apply Temporal Memory (GRU) with persistent hidden state
         # Shape before GRU: (N_UAVs, hidden_dim)
-        self._init_hidden_if_needed(x)
+        if self.use_gru:
+            self._init_hidden_if_needed(x)
 
-        # GRU expects (batch, seq_len, features)
-        x_seq = x.unsqueeze(1)  # Shape: (N_UAVs, 1, hidden_dim)
+            # GRU expects (batch, seq_len, features)
+            x_seq = x.unsqueeze(1)  # Shape: (N_UAVs, 1, hidden_dim)
 
-        x_out, self.hidden_state = self.memory_block(x_seq, self.hidden_state)
-        x = x_out.squeeze(1)     # Shape: (N_UAVs, hidden_dim)
+            x_out, self.hidden_state = self.memory_block(x_seq, self.hidden_state)
+            x = x_out.squeeze(1)     # Shape: (N_UAVs, hidden_dim)
 
         # Dueling Bifurcation
         values = self.value_stream(x)           # Shape: (N_UAVs, 1)
@@ -109,6 +156,11 @@ class MAGAT_D3QN_QNetwork(nn.Module):
 
         # Recombine: Q(s, a) = V(s) + ( A(s, a) - mean(A(s, a)) )
         q_values = values + (advantages - advantages.mean(dim=1, keepdim=True))
+
+        if alive_mask is not None:
+            # Mask out dead clusters
+            # q_values shape is (N_UAVs, num_actions), alive_mask is (N_UAVs,)
+            q_values = q_values * alive_mask.unsqueeze(-1).float()
 
         return q_values
 
@@ -153,11 +205,16 @@ class QMIXMixer(nn.Module):
             nn.Linear(mixer_embed, 1),
         )
 
-    def forward(self, agent_qs, global_state):
+    def forward(self, agent_qs, global_state, alive_mask=None):
         B = agent_qs.size(0)
 
         w1 = torch.abs(self.hyper_w1(global_state))
         w1 = w1.view(B, self.num_agents, self.mixer_embed)
+        
+        if alive_mask is not None:
+            # alive_mask: (B, N) -> mask out contributions of dead clusters
+            w1 = w1 * alive_mask.unsqueeze(-1).float()
+
         b1 = self.hyper_b1(global_state).unsqueeze(1)
 
         qs = agent_qs.unsqueeze(1)

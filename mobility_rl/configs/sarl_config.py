@@ -3,6 +3,7 @@
 
 import os
 from configs import config as global_cfg
+from configs.cluster_config import ClusterConfig as CC
 
 class RLConfig:
     # ----------------------------------------------------
@@ -19,7 +20,7 @@ class RLConfig:
     # ----------------------------------------------------
     # Observation Features
     # ----------------------------------------------------
-    NUM_SCALAR_FEATURES = 14
+    NUM_SCALAR_FEATURES = CC.C_MAX * CC.OBS_DIM_CLUSTER
     HISTORY_WINDOW_STEPS = 5       # Size of the temporal window
     
     # ----------------------------------------------------

@@ -3,12 +3,15 @@
 
 import os
 
+from configs.cluster_config import ClusterConfig as CC
+
 class MARLConfig:
     # --------------------------------------------------
     # Observation / Action
     # --------------------------------------------------
-    OBS_DIM = 16               # Per-agent observation features
-    NUM_ACTIONS = 2            # 0=TDMA, 1=CSMA/CA
+    NUM_AGENTS = CC.C_MAX
+    OBS_DIM = CC.OBS_DIM_CLUSTER
+    NUM_ACTIONS = CC.NUM_ACTIONS
 
     # --------------------------------------------------
     # Training Hyperparameters
@@ -25,15 +28,19 @@ class MARLConfig:
     TARGET_UPDATE_FREQ = 1000  # Steps between target net sync
     HIDDEN_DIM = 64
     GNN_HEADS = 4
+    MAGAT_USE_GRAPH = True
+    MAGAT_USE_ATTENTION = True
+    MAGAT_USE_GRU = True
+    MAGAT_USE_BURST_HISTORY = True
 
     # --------------------------------------------------
-    # Reward Weights
+    # Reward weights are now managed centrally in ClusterConfig
+    # See algorithms/rl/rewards.py for math formulation.
     # --------------------------------------------------
-    W_THROUGHPUT = 0.35
-    W_DELAY = 0.15
-    W_DROPS = 0.25
-    W_COLLISIONS = 0.25
-    W_LINK_UTIL = 0.0
+    W_THROUGHPUT = CC.ALPHA_LOCAL_THROUGHPUT + CC.ALPHA_INTER_THROUGHPUT
+    W_DELAY = CC.BETA_LOCAL_DELAY + CC.BETA_INTER_DELAY
+    W_DROPS = CC.PHI_QUEUE_OVERFLOW
+    W_COLLISIONS = CC.GAMMA_COLLISION
 
     # --------------------------------------------------
     # QMIX-specific

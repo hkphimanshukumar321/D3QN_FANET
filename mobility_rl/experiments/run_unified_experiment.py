@@ -4,19 +4,11 @@ Unified Experiment Runner — SARL + MARL on MARL Environment
 Trains and evaluates ALL agents (SARL and MARL) on the same MARLMacEnv,
 with ablation studies for fair comparison.
 
-Shared Reward Semantics
------------------------
-All RL methods (SARL and MARL) optimize the same shared network-level
-cooperative reward computed from four normalized evaluation metrics:
-
-    R = + wT  · norm_throughput
-        - wD  · norm_delay
-        - wDr · norm_drops
-        - wCo · norm_collisions
-
-Reward weights are defined in ``configs/marl_config.py`` (MARLConfig) and
-applied identically to every agent.  No algorithm receives a local or
-algorithm-specific reward definition.
+Reward Semantics
+----------------
+MARL agents optimize local cluster-head rewards on the decentralized env.
+SARL baselines optimize the centralized team aggregation over the same
+underlying burst-split network dynamics.
 
 Usage:
     python experiments/run_unified_experiment.py
@@ -57,8 +49,10 @@ sys.path.insert(0, project_root)
 
 from algorithms.mac.baseline import Config, Logger, simulate_tdma, simulate_csma_ca
 from configs import config as params
+from configs.cluster_config import ClusterConfig as CC
 from configs.sarl_config import RLConfig
 from configs.marl_config import MARLConfig
+from envs.burst_scheduler import VALID_RHO_LEVELS, encode_action
 
 # Experiment tracking & rich logging (autodetect)
 from utils.experiment_tracking import (
@@ -71,6 +65,7 @@ from utils.rich_logger import (
     log_step, print_banner, print_section, print_table, get_console,
 )
 from experiments.run_experiments import generate_baseline_plots, generate_aggregated_rl_plots
+from experiments.evidence_metrics import jain_fairness, pxx, runtime_per_cluster_ms
 
 # =====================================================================
 # Constants
@@ -173,6 +168,205 @@ def build_mac_config(N, sim_time_s, seed=None, rts_cts_enabled=None, ack_enabled
     )
 
 
+def default_fixed_action(mac_mode: int) -> int:
+    """Use the midpoint rho for static baseline actions."""
+    rho_index = len(VALID_RHO_LEVELS) // 2
+    return encode_action(mac_mode, rho_index)
+
+
+def get_magat_arch_kwargs():
+    return {
+        "node_in_dim": MARLConfig.OBS_DIM,
+        "hidden_dim": MARLConfig.HIDDEN_DIM,
+        "num_actions": MARLConfig.NUM_ACTIONS,
+        "heads": MARLConfig.GNN_HEADS,
+        "use_graph": getattr(MARLConfig, "MAGAT_USE_GRAPH", True),
+        "use_attention": getattr(MARLConfig, "MAGAT_USE_ATTENTION", True),
+        "use_gru": getattr(MARLConfig, "MAGAT_USE_GRU", True),
+        "use_burst_history": getattr(MARLConfig, "MAGAT_USE_BURST_HISTORY", True),
+    }
+
+
+def aggregate_cluster_infos(raw_infos):
+    """Aggregate per-cluster info dicts into burst-level metrics."""
+    if not raw_infos:
+        return {
+            "throughput_mbps": 0.0,
+            "delay_ms": 0.0,
+            "drops": 0.0,
+            "collisions": 0.0,
+            "coord_success": 0.0,
+            "mac_choices": [],
+            "rho_values": [],
+            "cluster_sizes": [],
+            "graph_degrees": [],
+            "local_backlogs": [],
+        }
+
+    alive_infos = [info for info in raw_infos.values() if info.get("alive", False)]
+    if not alive_infos:
+        return {
+            "throughput_mbps": 0.0,
+            "delay_ms": 0.0,
+            "drops": 0.0,
+            "collisions": 0.0,
+            "coord_success": 0.0,
+            "mac_choices": [],
+            "rho_values": [],
+            "cluster_sizes": [],
+            "graph_degrees": [],
+            "local_backlogs": [],
+        }
+
+    return {
+        "throughput_mbps": float(sum(i.get("throughput_mbps", 0.0) for i in alive_infos)),
+        "delay_ms": float(np.mean([i.get("delay_ms", 0.0) for i in alive_infos])),
+        "drops": float(sum(i.get("drops", 0.0) for i in alive_infos)),
+        "collisions": float(sum(i.get("collisions", 0.0) for i in alive_infos)),
+        "coord_success": float(np.mean([i.get("inter_coord_success", 0.0) for i in alive_infos])),
+        "mac_choices": [int(i.get("chosen_mac", 0)) for i in alive_infos],
+        "rho_values": [float(i.get("rho", CC.DEFAULT_RHO)) for i in alive_infos],
+        "cluster_sizes": [int(i.get("cluster_size", 0)) for i in alive_infos],
+        "graph_degrees": [int(i.get("graph_degree", 0)) for i in alive_infos],
+        "local_backlogs": [float(i.get("local_backlog", 0.0)) for i in alive_infos],
+    }
+
+
+def build_cluster_step_records(model_name, pps, step_idx, raw_infos, step_summary=None):
+    records = []
+    if not raw_infos:
+        return records
+    step_summary = step_summary or {}
+    for agent_name, info in raw_infos.items():
+        if not info.get("alive", False):
+            continue
+        records.append({
+            "Model": model_name,
+            "Offered_Load_pps": int(pps),
+            "Step": int(step_idx),
+            "Agent": agent_name,
+            "Cluster_ID": int(agent_name.split("_")[-1]),
+            "Chosen_MAC": int(info.get("chosen_mac", 0)),
+            "Rho": float(info.get("rho", CC.DEFAULT_RHO)),
+            "T1_Time": float(info.get("t1_time", 0.0)),
+            "T2_Time": float(info.get("t2_time", 0.0)),
+            "Throughput_Mbps": float(info.get("throughput_mbps", 0.0)),
+            "Inter_Throughput_Mbps": float(info.get("inter_throughput_mbps", 0.0)),
+            "Delay_ms": float(info.get("delay_ms", 0.0)),
+            "Inter_Delay_ms": float(info.get("inter_delay_ms", 0.0)),
+            "Drops": float(info.get("drops", 0.0)),
+            "Collisions": float(info.get("collisions", 0.0)),
+            "Coord_Success": float(info.get("inter_coord_success", 0.0)),
+            "Cluster_Size": int(info.get("cluster_size", 0)),
+            "Graph_Degree": int(info.get("graph_degree", 0)),
+            "Local_Backlog": float(info.get("local_backlog", 0.0)),
+            "Inter_Backlog": float(info.get("inter_backlog", 0.0)),
+            "Leader_Health": float(info.get("leader_health", 0.0)),
+            "Handover_Flag": float(info.get("handover_flag", 0.0)),
+            "Current_Offered_PPS": float(info.get("current_offered_pps", pps)),
+            "Global_Throughput_Mbps": float(info.get("global_th", 0.0)),
+            "Num_Clusters": int(step_summary.get("num_clusters", 0)),
+            "Avg_Cluster_Size": float(step_summary.get("avg_cluster_size", 0.0)),
+            "Cluster_Size_Std": float(step_summary.get("cluster_size_std", 0.0)),
+            "Avg_Graph_Degree": float(step_summary.get("avg_graph_degree", 0.0)),
+            "Graph_Density": float(step_summary.get("graph_density", 0.0)),
+            "Reassociations": int(step_summary.get("reassociations", 0)),
+            "Splits": int(step_summary.get("splits", 0)),
+            "Merges": int(step_summary.get("merges", 0)),
+            "Handovers": int(step_summary.get("handovers", 0)),
+            "Failure_Events": int(step_summary.get("failure_events", 0)),
+        })
+    return records
+
+
+def reset_eval_model_state(mtype, model):
+    if mtype == "marl_gnn" and hasattr(model, "reset_memory"):
+        model.reset_memory()
+    if mtype == "marl" and hasattr(model, "steps_done"):
+        model.steps_done = 0
+
+
+def load_eval_models(cp_dir, log):
+    import torch
+    from envs.sarl_central_env import SARLCentralEnv
+    from algorithms.rl.marl_baselines import IQLAgent, VDNAgent, QMIXAgent
+
+    models = {}
+
+    def _try_load_sb3(name, cls, filename):
+        path = os.path.join(cp_dir, filename)
+        if os.path.exists(path + ".zip"):
+            try:
+                models[name] = ("sarl", cls.load(path))
+                log(f"  Loaded SARL: {name}")
+            except Exception as exc:
+                log(f"  Skipping incompatible SARL checkpoint {name}: {exc}")
+
+    from stable_baselines3 import DQN, PPO, A2C
+    if getattr(params, "RUN_CUSTOM_RL", True):
+        from algorithms.rl.custom_mca_d3qn import MCABranchingD3QNAgent
+
+        custom_path = os.path.join(cp_dir, "unified_mca_d3qn_model")
+        if os.path.exists(custom_path):
+            try:
+                sarl_env = SARLCentralEnv(seed=params.SEED)
+                models["MCA-D3QN"] = ("sarl_custom", MCABranchingD3QNAgent.load(custom_path, env=sarl_env))
+                log("  Loaded SARL: MCA-D3QN")
+            except Exception as exc:
+                log(f"  Skipping incompatible SARL checkpoint MCA-D3QN: {exc}")
+    if getattr(params, "RUN_DQN", True):
+        _try_load_sb3("DQN", DQN, "unified_dqn_model")
+    if getattr(params, "RUN_PPO", True):
+        _try_load_sb3("PPO", PPO, "unified_ppo_model")
+    if getattr(params, "RUN_A2C", True):
+        _try_load_sb3("A2C", A2C, "unified_a2c_model")
+
+    n_agents = CC.C_MAX
+    obs_dim = MARLConfig.OBS_DIM
+    for name, cls, fname, run_flag in [
+        ("IQL", IQLAgent, "unified_iql_model.pth", "RUN_MARL_IQL"),
+        ("VDN", VDNAgent, "unified_vdn_model.pth", "RUN_MARL_VDN"),
+    ]:
+        if not getattr(params, run_flag, True):
+            continue
+        path = os.path.join(cp_dir, fname)
+        if os.path.exists(path):
+            try:
+                agent = cls(n_agents, obs_dim, MARLConfig.NUM_ACTIONS)
+                agent.load(path)
+                models[name] = ("marl", agent)
+                log(f"  Loaded MARL: {name}")
+            except Exception as exc:
+                log(f"  Skipping incompatible MARL checkpoint {name}: {exc}")
+
+    if getattr(params, "RUN_MARL_QMIX", True):
+        qmix_path = os.path.join(cp_dir, "unified_qmix_model.pth")
+        if os.path.exists(qmix_path):
+            try:
+                agent = QMIXAgent(n_agents, obs_dim, MARLConfig.NUM_ACTIONS, embed_dim=MARLConfig.QMIX_EMBED_DIM)
+                agent.load(qmix_path)
+                models["QMIX"] = ("marl", agent)
+                log("  Loaded MARL: QMIX")
+            except Exception as exc:
+                log(f"  Skipping incompatible MARL checkpoint QMIX: {exc}")
+
+    if getattr(params, "RUN_MARL_GNN", True):
+        gnn_path = os.path.join(cp_dir, "unified_gnn_marl_model.pth")
+        if os.path.exists(gnn_path):
+            try:
+                from algorithms.rl.gnn_marl import MAGAT_D3QN_QNetwork
+
+                device = torch.device("cpu")
+                gnn = MAGAT_D3QN_QNetwork(**get_magat_arch_kwargs()).to(device)
+                gnn.load_state_dict(torch.load(gnn_path, map_location=device))
+                gnn.eval()
+                models["MAGAT-D3QN"] = ("marl_gnn", gnn)
+                log("  Loaded MARL: MAGAT-D3QN")
+            except Exception as exc:
+                log(f"  Skipping incompatible MARL checkpoint MAGAT-D3QN: {exc}")
+    return models
+
+
 # =====================================================================
 # Step 1: Baseline MAC Simulations
 # =====================================================================
@@ -238,7 +432,10 @@ def step1_baseline_marl(pps_list, seed, log):
         f"(enabled={getattr(params, 'ENABLE_MOBILITY', False)})")
 
     results = []
-    protocol_map = {0: "TDMA", 1: "CSMA"}
+    protocol_map = {
+        default_fixed_action(0): "TDMA",
+        default_fixed_action(1): "CSMA",
+    }
 
     for idx, pps in enumerate(tqdm(pps_list, desc="MARL Baseline Sweep", unit="load")):
         log(f"  Load {pps} pps ({idx + 1}/{len(pps_list)})")
@@ -260,15 +457,14 @@ def step1_baseline_marl(pps_list, seed, log):
 
             while env.agents:
                 # All agents unanimously vote for the fixed protocol
-                actions = {a: fixed_action for a in env.agents}
+                actions = {a: fixed_action for a in env.possible_agents}
                 obs, rewards, terms, truncs, infos = env.step(actions)
 
-                # Collect per-step metrics from any agent's info
-                any_info = next(iter(infos.values()), {})
-                ep_throughputs.append(any_info.get("throughput", 0.0))
-                ep_delays.append(any_info.get("delay_ms", 0.0))
-                ep_drops += any_info.get("drops", 0)
-                ep_collisions += any_info.get("collisions", 0)
+                agg = aggregate_cluster_infos(infos)
+                ep_throughputs.append(agg["throughput_mbps"])
+                ep_delays.append(agg["delay_ms"])
+                ep_drops += agg["drops"]
+                ep_collisions += agg["collisions"]
 
             n_steps = max(len(ep_throughputs), 1)
             avg_thr = sum(ep_throughputs) / n_steps
@@ -294,7 +490,7 @@ def step1_baseline_marl(pps_list, seed, log):
 # Step 2: Unified Training — Workers
 # =====================================================================
 def _train_sarl_worker(kwargs):
-    """Train a single SARL agent on MARLMacEnv via wrapper."""
+    """Train a single centralized baseline on SARLCentralEnv."""
     algo = kwargs['algo']
     timesteps = kwargs['timesteps']
     cp_dir = kwargs['cp_dir']
@@ -303,7 +499,7 @@ def _train_sarl_worker(kwargs):
     force_retrain = kwargs.get('force_retrain', False)
 
     import pandas as pd
-    from envs.marl_sarl_wrapper import MARLtoSARLWrapper
+    from envs.sarl_central_env import SARLCentralEnv
     from utils.device_manager import resolve_device
     from utils.experiment_tracking import WandbMARLLogger
 
@@ -312,38 +508,7 @@ def _train_sarl_worker(kwargs):
     print(f"  [Worker {pid}] SARL training: {algo.upper()} on device: {train_device}")
 
     if algo == 'tabular':
-        from algorithms.rl.tabular_qlearning import TabularQLearning
-        save_path = os.path.join(cp_dir, "unified_tabular_model.json")
-        if (not force_retrain) and os.path.exists(save_path):
-            return f"{algo.upper()} skipped (checkpoint)"
-
-        env = MARLtoSARLWrapper(seed=seed)
-        model = TabularQLearning(seed=seed)
-        obs, _ = env.reset(seed=seed)
-        rewards_log, steps_log = [], []
-        ep_reward = 0.0
-
-        pbar = tqdm(total=timesteps, desc=f"TABULAR", unit="step", leave=True)
-        for step in range(timesteps):
-            action, _ = model.predict(obs, deterministic=False)
-            next_obs, reward, terminated, truncated, _ = env.step(action)
-            model.learn(obs, action, reward, next_obs, done=(terminated or truncated))
-            obs = next_obs
-            ep_reward += reward
-            pbar.update(1)
-            if terminated or truncated:
-                obs, _ = env.reset()
-                rewards_log.append(ep_reward)
-                steps_log.append(step + 1)
-                pbar.set_postfix({"R": f"{ep_reward:.2f}"})
-                ep_reward = 0.0
-        pbar.close()
-        model.save(save_path)
-        if steps_log:
-            df = pd.DataFrame({"step": steps_log, "reward": rewards_log})
-            df.to_csv(os.path.join(csv_dir, "tabular_training_rewards.csv"), index=False)
-            df.to_csv(os.path.join(cp_dir, "tabular_training_rewards.csv"), index=False)
-        return f"{algo.upper()} trained."
+        return "TABULAR skipped (unsupported for MultiDiscrete centralized burst actions)."
 
     elif algo in ['dqn', 'ppo', 'a2c']:
         from algorithms.rl.sb3_baselines import create_sb3_baseline
@@ -354,6 +519,9 @@ def _train_sarl_worker(kwargs):
         save_path = os.path.join(cp_dir, f"unified_{algo}_model")
         if (not force_retrain) and os.path.exists(save_path + ".zip"):
             return f"{algo.upper()} skipped (checkpoint)"
+
+        if algo == "dqn":
+            return "DQN skipped (SB3 DQN does not support MultiDiscrete centralized burst actions)."
 
         wb_logger = WandbMARLLogger(algo_name=algo)
 
@@ -374,7 +542,7 @@ def _train_sarl_worker(kwargs):
             def _on_training_end(self):
                 self.pbar.close()
 
-        env = Monitor(MARLtoSARLWrapper(seed=seed))
+        env = Monitor(SARLCentralEnv(seed=seed))
         vec_env = DummyVecEnv([lambda: env])
         model = create_sb3_baseline(vec_env, algo_name=algo, seed=seed)
         cb = RewardLogger(timesteps)
@@ -388,36 +556,30 @@ def _train_sarl_worker(kwargs):
 
     elif algo == 'mca_d3qn':
         from algorithms.rl.custom_mca_d3qn import create_mca_d3qn
-        from stable_baselines3.common.monitor import Monitor
-        from stable_baselines3.common.vec_env import DummyVecEnv
-        from stable_baselines3.common.callbacks import BaseCallback
 
         save_path = os.path.join(cp_dir, "unified_mca_d3qn_model")
-        if (not force_retrain) and os.path.exists(save_path + ".zip"):
+        if (not force_retrain) and os.path.exists(save_path):
             return f"MCA-D3QN skipped (checkpoint)"
 
         wb_logger = WandbMARLLogger(algo_name="mca_d3qn")
 
-        class RewardLogger(BaseCallback):
+        class RewardLogger:
             def __init__(self, total):
-                super().__init__(verbose=0)
                 self.rewards, self.steps = [], []
                 self.pbar = tqdm(total=total, desc="MCA-D3QN", unit="step", leave=True)
             def _on_step(self):
                 self.pbar.update(1)
-                if "episode" in self.locals.get("infos", [{}])[0]:
-                    ep = self.locals["infos"][0]["episode"]
-                    self.rewards.append(ep["r"])
-                    self.steps.append(self.num_timesteps)
-                    self.pbar.set_postfix({"R": f"{ep['r']:.2f}"})
-                    wb_logger.log_episode(len(self.rewards), reward=ep["r"], ep_length=ep["l"])
-                return True
+                if self.locals.get("done", False):
+                    ep_reward = float(self.locals.get("episode_reward", 0.0))
+                    self.rewards.append(ep_reward)
+                    self.steps.append(len(self.steps) + 1)
+                    self.pbar.set_postfix({"R": f"{ep_reward:.2f}"})
+                    wb_logger.log_episode(len(self.rewards), reward=ep_reward)
             def _on_training_end(self):
                 self.pbar.close()
 
-        env = Monitor(MARLtoSARLWrapper(seed=seed))
-        vec_env = DummyVecEnv([lambda: env])
-        model = create_mca_d3qn(vec_env, seed=seed)
+        env = SARLCentralEnv(seed=seed)
+        model = create_mca_d3qn(env, seed=seed, device=train_device)
         cb = RewardLogger(timesteps)
         model.learn(total_timesteps=timesteps, callback=cb, progress_bar=False)
         model.save(save_path)
@@ -452,7 +614,7 @@ def _train_marl_worker(kwargs):
     print(f"  [Worker {pid}] MARL training: {algo.upper()} on device: {train_device}")
 
     env = MARLMacEnv(seed=seed)
-    N = params.N
+    N = CC.C_MAX
     obs_dim = MARLConfig.OBS_DIM
     num_actions = MARLConfig.NUM_ACTIONS
     device = torch.device(train_device)
@@ -470,7 +632,6 @@ def _train_marl_worker(kwargs):
     # --- MAGAT-D3QN (separate GNN training) ---
     if algo == 'magat_d3qn':
         from algorithms.rl.gnn_marl import MAGAT_D3QN_QNetwork
-        from torch_geometric.data import Data, Batch
         import random, math
         from collections import deque
 
@@ -478,8 +639,9 @@ def _train_marl_worker(kwargs):
         if (not force_retrain) and os.path.exists(save_path):
             return "MAGAT-D3QN skipped (checkpoint)"
 
-        policy_net = MAGAT_D3QN_QNetwork(node_in_dim=obs_dim, hidden_dim=64, num_actions=2, heads=4).to(device)
-        target_net = MAGAT_D3QN_QNetwork(node_in_dim=obs_dim, hidden_dim=64, num_actions=2, heads=4).to(device)
+        magat_kwargs = get_magat_arch_kwargs()
+        policy_net = MAGAT_D3QN_QNetwork(**magat_kwargs).to(device)
+        target_net = MAGAT_D3QN_QNetwork(**magat_kwargs).to(device)
         target_net.load_state_dict(policy_net.state_dict())
         target_net.eval()
 
@@ -496,7 +658,7 @@ def _train_marl_worker(kwargs):
 
         for ep in tqdm(range(episodes), desc="MAGAT-D3QN", unit="ep"):
             obs, _ = env.reset()
-            x, edge_index = env.get_global_graph_state()
+            x, edge_index, alive_mask = env.get_global_graph_state()
             ep_reward = 0
             epsilon = 0.05 + 0.95 * math.exp(-float(ep) / 500.0)
             
@@ -507,65 +669,60 @@ def _train_marl_worker(kwargs):
                 global_step += 1
                 x_t = torch.tensor(x, dtype=torch.float32).to(device)
                 edge_t = torch.tensor(edge_index, dtype=torch.long).to(device)
+                alive_t = torch.tensor(alive_mask, dtype=torch.bool).to(device)
 
                 actions = {}
                 if random.random() < epsilon:
-                    for a in env.agents:
-                        actions[a] = env.action_space(a).sample()
+                    for idx, a in enumerate(env.possible_agents):
+                        actions[a] = env.action_space(a).sample() if alive_mask[idx] else 0
                 else:
                     with torch.no_grad():
-                        q_vals = policy_net(x_t, edge_t)
-                        for i, a in enumerate(env.agents):
-                            actions[a] = q_vals[i].argmax().item()
+                        q_vals = policy_net(x_t, edge_t, alive_t)
+                        for i, a in enumerate(env.possible_agents):
+                            actions[a] = q_vals[i].argmax().item() if alive_mask[i] else 0
 
                 next_obs, rewards, terms, truncs, infos = env.step(actions)
-                r = list(rewards.values())[0] if rewards else 0.0
-                ep_reward += r
-                next_x, next_ei = env.get_global_graph_state()
+                reward_vec = np.array([rewards.get(a, 0.0) for a in env.possible_agents], dtype=np.float32)
+                ep_reward += float(np.sum(reward_vec))
+                next_x, next_ei, next_alive = env.get_global_graph_state()
+                done = any(terms.values()) if terms else True
 
-                if env.agents:
-                    act_list = [actions[a] for a in env.agents]
-                    done = terms[env.agents[0]]
-                    memory.append((x, edge_index, act_list, r, next_x, next_ei, done))
+                act_list = np.array([actions.get(a, 0) for a in env.possible_agents], dtype=np.int64)
+                memory.append((x, edge_index, alive_mask, act_list, reward_vec, next_x, next_ei, next_alive, done))
 
-                x, edge_index = next_x, next_ei
+                x, edge_index, alive_mask = next_x, next_ei, next_alive
 
                 # OPTIMIZATION: Train only every 4 steps (train_freq=4) to drastically slash overhead
                 if len(memory) > batch_size and global_step % 4 == 0:
                     batch = random.sample(memory, batch_size)
-                    
-                    data_list = []
-                    next_data_list = []
-                    for (bx, bei, ba, br, bnx, bnei, bd) in batch:
-                        bxt = torch.tensor(bx, dtype=torch.float32)
-                        bet = torch.tensor(bei, dtype=torch.long)
-                        bnxt = torch.tensor(bnx, dtype=torch.float32)
-                        bnet = torch.tensor(bnei, dtype=torch.long)
-                        
-                        data_list.append(Data(x=bxt, edge_index=bet, action=torch.tensor(ba, dtype=torch.long),
-                                              reward=torch.tensor([br], dtype=torch.float32),
-                                              done=torch.tensor([bd], dtype=torch.float32)))
-                        next_data_list.append(Data(x=bnxt, edge_index=bnet))
-                        
-                    # OPTIMIZATION: PyTorch Geometric native batching reduces 64 forward passes to 1
-                    batch_data = Batch.from_data_list(data_list).to(device)
-                    next_batch_data = Batch.from_data_list(next_data_list).to(device)
-                    
-                    policy_net.reset_memory()
-                    q_all = policy_net(batch_data.x, batch_data.edge_index)  # Shape: (Batch * N, Num_Actions)
-                    
-                    with torch.no_grad():
-                        target_net.reset_memory()
-                        q_next = target_net(next_batch_data.x, next_batch_data.edge_index).max(1)[0] # Shape: (Batch * N,)
-                        
-                    actions_tensor = batch_data.action # Shape: (Batch * N,)
-                    q_a = q_all[torch.arange(q_all.size(0)), actions_tensor]
-                    
-                    # Expand the graph-level scalar reward & done to match N agents per graph map
-                    block_map = batch_data.batch
-                    target = batch_data.reward[block_map] + gamma * q_next * (1 - batch_data.done[block_map])
-                    
-                    loss = torch.nn.functional.mse_loss(q_a, target)
+
+                    losses = []
+                    for (bx, bei, bmask, ba, br, bnx, bnei, bnmask, bd) in batch:
+                        bxt = torch.tensor(bx, dtype=torch.float32, device=device)
+                        bet = torch.tensor(bei, dtype=torch.long, device=device)
+                        bmask_t = torch.tensor(bmask, dtype=torch.bool, device=device)
+                        ba_t = torch.tensor(ba, dtype=torch.long, device=device)
+                        br_t = torch.tensor(br, dtype=torch.float32, device=device)
+                        bnxt = torch.tensor(bnx, dtype=torch.float32, device=device)
+                        bnet = torch.tensor(bnei, dtype=torch.long, device=device)
+                        bnmask_t = torch.tensor(bnmask, dtype=torch.bool, device=device)
+
+                        policy_net.reset_memory()
+                        q_all = policy_net(bxt, bet, bmask_t)
+                        q_a = q_all[torch.arange(q_all.size(0), device=device), ba_t]
+
+                        with torch.no_grad():
+                            target_net.reset_memory()
+                            q_next = target_net(bnxt, bnet, bnmask_t).max(1)[0]
+                            target = br_t + gamma * q_next * (1.0 - float(bd))
+
+                        active_idx = bmask_t
+                        if torch.any(active_idx):
+                            losses.append(torch.nn.functional.mse_loss(q_a[active_idx], target[active_idx]))
+
+                    if not losses:
+                        continue
+                    loss = torch.stack(losses).mean()
                     optimizer.zero_grad()
                     loss.backward()
                     optimizer.step()
@@ -613,24 +770,30 @@ def _train_marl_worker(kwargs):
     for ep in tqdm(range(episodes), desc=algo.upper(), unit="ep"):
         obs_dict, _ = env.reset()
         obs_all = np.stack([obs_dict[a] for a in env.possible_agents])
+        alive_mask = np.array([1 if env.cluster_manager.get_members(i) else 0 for i in range(CC.C_MAX)], dtype=np.bool_)
         ep_reward = 0.0
 
         while env.agents:
             global_step += 1
-            actions_list = agent.select_actions(obs_all)
-            actions_dict = {a: actions_list[i] for i, a in enumerate(env.agents)}
+            actions_list = agent.select_actions(obs_all, alive_mask=alive_mask)
+            actions_dict = {a: actions_list[i] for i, a in enumerate(env.possible_agents)}
             next_obs_dict, rewards, terms, truncs, infos = env.step(actions_dict)
-            r = list(rewards.values())[0] if rewards else 0.0
             next_obs_all = np.stack([next_obs_dict[a] for a in env.possible_agents])
-            done = terms[env.possible_agents[0]] if env.possible_agents[0] in terms else True
-            agent.store(obs_all, actions_list, r, next_obs_all, done)
+            reward_vec = np.array([rewards.get(a, 0.0) for a in env.possible_agents], dtype=np.float32)
+            next_alive_mask = np.array(
+                [1 if infos.get(f"cluster_{i}", {}).get("alive", False) else 0 for i in range(CC.C_MAX)],
+                dtype=np.bool_,
+            )
+            done = any(terms.values()) if terms else True
+            agent.store(obs_all, actions_list, reward_vec, next_obs_all, done, alive_mask=alive_mask)
             
             # OPTIMIZATION: Train only every 4 steps (train_freq=4) to drastically slash overhead
             if global_step % 4 == 0:
                 agent.update()
                 
             obs_all = next_obs_all
-            ep_reward += r
+            alive_mask = next_alive_mask
+            ep_reward += float(np.sum(reward_vec))
 
         ep_rewards.append(ep_reward)
         wb_logger.log_episode(ep, reward=ep_reward, epsilon=agent.get_epsilon())
@@ -721,82 +884,29 @@ def step2_train(
 # =====================================================================
 # Step 3: Evaluation Sweep
 # =====================================================================
-def step3_evaluate(pps_list, cp_dir, out_dir, log, deterministic_eval=True):
+def step3_evaluate(
+    pps_list,
+    cp_dir,
+    out_dir,
+    log,
+    deterministic_eval=True,
+    env_reset_options=None,
+    csv_name="unified_eval_sweep.csv",
+    raw_cluster_csv_name="cluster_step_records.csv",
+    summary_json_name="evaluation_summary.json",
+    save_raw_cluster_logs=True,
+    preloaded_models=None,
+):
     """Load all models and evaluate across traffic sweep on MARL env."""
     log("\n" + "="*60)
     log(" STEP 3: Evaluation Sweep (All agents on MARL env)")
     log("="*60)
 
-    import torch
     from envs.marl_mac_env import MARLMacEnv
-    from envs.marl_sarl_wrapper import MARLtoSARLWrapper
-    from algorithms.rl.marl_baselines import IQLAgent, VDNAgent, QMIXAgent
+    from envs.sarl_central_env import SARLCentralEnv
+    import torch
 
-    models = {}  # name → (type, model)
-
-    # --- Load SARL models ---
-    def _try_load_sb3(name, cls, filename):
-        path = os.path.join(cp_dir, filename)
-        if os.path.exists(path + ".zip"):
-            models[name] = ('sarl', cls.load(path))
-            log(f"  Loaded SARL: {name}")
-
-    from stable_baselines3 import DQN, PPO, A2C
-    if getattr(params, "RUN_CUSTOM_RL", True):
-        _try_load_sb3("MCA-D3QN", DQN, "unified_mca_d3qn_model")
-    if getattr(params, "RUN_DQN", True):
-        _try_load_sb3("DQN", DQN, "unified_dqn_model")
-    if getattr(params, "RUN_PPO", True):
-        _try_load_sb3("PPO", PPO, "unified_ppo_model")
-    if getattr(params, "RUN_A2C", True):
-        _try_load_sb3("A2C", A2C, "unified_a2c_model")
-
-    if getattr(params, "RUN_TABULAR_QLEARNING", True):
-        tab_path = os.path.join(cp_dir, "unified_tabular_model.json")
-        if os.path.exists(tab_path):
-            from algorithms.rl.tabular_qlearning import TabularQLearning
-            tab = TabularQLearning()
-            tab.load(tab_path)
-            tab.epsilon = 0.0
-            models["Tabular"] = ('sarl', tab)
-            log(f"  Loaded SARL: Tabular")
-
-    # --- Load MARL models ---
-    N = params.N
-    obs_dim = MARLConfig.OBS_DIM
-
-    for name, cls, fname, run_flag in [
-        ("IQL", IQLAgent, "unified_iql_model.pth", "RUN_MARL_IQL"),
-        ("VDN", VDNAgent, "unified_vdn_model.pth", "RUN_MARL_VDN"),
-    ]:
-        if not getattr(params, run_flag, True):
-            continue
-        path = os.path.join(cp_dir, fname)
-        if os.path.exists(path):
-            agent = cls(N, obs_dim, 2)
-            agent.load(path)
-            models[name] = ('marl', agent)
-            log(f"  Loaded MARL: {name}")
-
-    # QMIX uses a dict checkpoint (q_net + mixer), needs embed_dim
-    if getattr(params, "RUN_MARL_QMIX", True):
-        qmix_path = os.path.join(cp_dir, "unified_qmix_model.pth")
-        if os.path.exists(qmix_path):
-            agent = QMIXAgent(N, obs_dim, 2, embed_dim=MARLConfig.QMIX_EMBED_DIM)
-            agent.load(qmix_path)
-            models["QMIX"] = ('marl', agent)
-            log(f"  Loaded MARL: QMIX")
-
-    if getattr(params, "RUN_MARL_GNN", True):
-        gnn_path = os.path.join(cp_dir, "unified_gnn_marl_model.pth")
-        if os.path.exists(gnn_path):
-            from algorithms.rl.gnn_marl import MAGAT_D3QN_QNetwork
-            device = torch.device("cpu")
-            gnn = MAGAT_D3QN_QNetwork(node_in_dim=obs_dim, hidden_dim=64, num_actions=2, heads=4).to(device)
-            gnn.load_state_dict(torch.load(gnn_path, map_location=device))
-            gnn.eval()
-            models["MAGAT-D3QN"] = ('marl_gnn', gnn)
-            log(f"  Loaded MARL: MAGAT-D3QN")
+    models = preloaded_models if preloaded_models is not None else load_eval_models(cp_dir, log)
 
     if not models:
         log("  WARNING: No models found. Skipping evaluation.")
@@ -804,25 +914,30 @@ def step3_evaluate(pps_list, cp_dir, out_dir, log, deterministic_eval=True):
 
     log(f"  Evaluating {len(models)} models across {len(pps_list)} load points")
 
-    # --- Evaluation loop ---
-    marl_env = MARLMacEnv()
-    sarl_wrapper = MARLtoSARLWrapper()
     results = []
+    cluster_step_records = []
 
     for pps in tqdm(pps_list, desc="Eval Sweep", unit="load"):
         params.SWEEP_MAX_PPS = pps
         setattr(params, "OFFERED_PPS", int(pps))
 
         for model_name, (mtype, model) in models.items():
+            reset_eval_model_state(mtype, model)
             total_thr, total_delay, total_drops, total_collisions, steps = 0, 0, 0, 0, 0
             mac_choices = []
+            rho_values = []
             avg_thr, avg_delay, dom_mac = 0.0, 0.0, "CSMA"
             total_inf_time = 0.0
+            inf_times_ms = []
             inf_steps = 0
+            step_cluster_throughputs = []
+            comm_overheads = []
+            current_reset_options = dict(env_reset_options or {})
+            current_reset_options["offered_pps"] = int(pps)
 
-            if mtype == 'sarl':
-                # Use wrapper
-                obs, _ = sarl_wrapper.reset()
+            if mtype in {'sarl', 'sarl_custom'}:
+                sarl_env = SARLCentralEnv(seed=params.SEED)
+                obs, _ = sarl_env.reset(options=current_reset_options)
                 done = False
 
                 while not done:
@@ -830,19 +945,30 @@ def step3_evaluate(pps_list, cp_dir, out_dir, log, deterministic_eval=True):
                     action, _ = model.predict(obs, deterministic=deterministic_eval)
                     t1 = time.perf_counter()
                     total_inf_time += (t1 - t0)
+                    inf_times_ms.append((t1 - t0) * 1000.0)
                     inf_steps += 1
 
-                    obs, reward, terminated, truncated, info = sarl_wrapper.step(action)
+                    obs, reward, terminated, truncated, info = sarl_env.step(action)
                     done = terminated or truncated
-                    mac_choices.append(int(action))
-
-                    raw = info.get("raw_infos", {})
-                    if raw:
-                        any_i = next(iter(raw.values()), {})
-                        total_thr += any_i.get("throughput", 0)
-                        total_delay += any_i.get("delay_ms", 0)
-                        total_drops += any_i.get("drops", 0)
-                        total_collisions += any_i.get("collisions", 0)
+                    agg = aggregate_cluster_infos(info.get("raw_infos", {}))
+                    total_thr += agg["throughput_mbps"]
+                    total_delay += agg["delay_ms"]
+                    total_drops += agg["drops"]
+                    total_collisions += agg["collisions"]
+                    mac_choices.extend(agg["mac_choices"])
+                    rho_values.extend(agg["rho_values"])
+                    comm_overheads.append(sarl_env.marl_env.estimate_neighbor_summary_overhead_bytes())
+                    step_cluster_throughputs.append([record.get("Throughput_Mbps", 0.0) for record in build_cluster_step_records(model_name, pps, steps, info.get("raw_infos", {}), sarl_env.marl_env.get_last_step_summary())])
+                    if save_raw_cluster_logs:
+                        cluster_step_records.extend(
+                            build_cluster_step_records(
+                                model_name,
+                                pps,
+                                steps,
+                                info.get("raw_infos", {}),
+                                sarl_env.marl_env.get_last_step_summary(),
+                            )
+                        )
                     steps += 1
 
                 avg_thr = total_thr / max(steps, 1)
@@ -850,28 +976,44 @@ def step3_evaluate(pps_list, cp_dir, out_dir, log, deterministic_eval=True):
                 dom_mac = "TDMA" if mac_choices.count(0) > mac_choices.count(1) else "CSMA"
 
             elif mtype == 'marl':
-                obs_dict, _ = marl_env.reset()
+                marl_env = MARLMacEnv(seed=params.SEED)
+                obs_dict, _ = marl_env.reset(options=current_reset_options)
                 obs_all = np.stack([obs_dict[a] for a in marl_env.possible_agents])
+                alive_mask = np.array(
+                    [1 if marl_env.cluster_manager.get_members(i) else 0 for i in range(CC.C_MAX)],
+                    dtype=np.bool_,
+                )
 
                 if deterministic_eval:
                     model.steps_done = model.eps_decay * 10  # force greedy
                 while marl_env.agents:
                     t0 = time.perf_counter()
-                    actions_list = model.select_actions(obs_all)
+                    actions_list = model.select_actions(obs_all, alive_mask=alive_mask)
                     t1 = time.perf_counter()
                     total_inf_time += (t1 - t0)
+                    inf_times_ms.append((t1 - t0) * 1000.0)
                     inf_steps += 1
 
-                    actions_dict = {a: actions_list[i] for i, a in enumerate(marl_env.agents)}
+                    actions_dict = {a: actions_list[i] for i, a in enumerate(marl_env.possible_agents)}
                     next_obs, rewards, terms, truncs, infos = marl_env.step(actions_dict)
                     obs_all = np.stack([next_obs[a] for a in marl_env.possible_agents])
+                    alive_mask = np.array(
+                        [1 if infos.get(f"cluster_{i}", {}).get("alive", False) else 0 for i in range(CC.C_MAX)],
+                        dtype=np.bool_,
+                    )
 
-                    any_i = next(iter(infos.values()), {})
-                    total_thr += any_i.get("throughput", 0)
-                    total_delay += any_i.get("delay_ms", 0)
-                    total_drops += any_i.get("drops", 0)
-                    total_collisions += any_i.get("collisions", 0)
-                    mac_choices.append(any_i.get("chosen_mac", 0))
+                    agg = aggregate_cluster_infos(infos)
+                    total_thr += agg["throughput_mbps"]
+                    total_delay += agg["delay_ms"]
+                    total_drops += agg["drops"]
+                    total_collisions += agg["collisions"]
+                    mac_choices.extend(agg["mac_choices"])
+                    rho_values.extend(agg["rho_values"])
+                    comm_overheads.append(marl_env.estimate_neighbor_summary_overhead_bytes())
+                    step_records = build_cluster_step_records(model_name, pps, steps, infos, marl_env.get_last_step_summary())
+                    step_cluster_throughputs.append([record.get("Throughput_Mbps", 0.0) for record in step_records])
+                    if save_raw_cluster_logs:
+                        cluster_step_records.extend(step_records)
                     steps += 1
 
                 avg_thr = total_thr / max(steps, 1)
@@ -879,29 +1021,41 @@ def step3_evaluate(pps_list, cp_dir, out_dir, log, deterministic_eval=True):
                 dom_mac = "TDMA" if mac_choices.count(0) > mac_choices.count(1) else "CSMA"
 
             elif mtype == 'marl_gnn':
-                obs_dict, _ = marl_env.reset()
-                x, edge_index = marl_env.get_global_graph_state()
+                marl_env = MARLMacEnv(seed=params.SEED)
+                obs_dict, _ = marl_env.reset(options=current_reset_options)
+                x, edge_index, alive_mask = marl_env.get_global_graph_state()
 
                 while marl_env.agents:
                     t0 = time.perf_counter()
                     x_t = torch.tensor(x, dtype=torch.float32)
                     e_t = torch.tensor(edge_index, dtype=torch.long)
+                    alive_t = torch.tensor(alive_mask, dtype=torch.bool)
                     with torch.no_grad():
-                        q_vals = model(x_t, e_t)
-                        actions_dict = {a: q_vals[i].argmax().item() for i, a in enumerate(marl_env.agents)}
+                        q_vals = model(x_t, e_t, alive_t)
+                        actions_dict = {
+                            a: (q_vals[i].argmax().item() if alive_mask[i] else 0)
+                            for i, a in enumerate(marl_env.possible_agents)
+                        }
                     t1 = time.perf_counter()
                     total_inf_time += (t1 - t0)
+                    inf_times_ms.append((t1 - t0) * 1000.0)
                     inf_steps += 1
 
                     next_obs, rewards, terms, truncs, infos = marl_env.step(actions_dict)
-                    x, edge_index = marl_env.get_global_graph_state()
+                    x, edge_index, alive_mask = marl_env.get_global_graph_state()
 
-                    any_i = next(iter(infos.values()), {})
-                    total_thr += any_i.get("throughput", 0)
-                    total_delay += any_i.get("delay_ms", 0)
-                    total_drops += any_i.get("drops", 0)
-                    total_collisions += any_i.get("collisions", 0)
-                    mac_choices.append(any_i.get("chosen_mac", 0))
+                    agg = aggregate_cluster_infos(infos)
+                    total_thr += agg["throughput_mbps"]
+                    total_delay += agg["delay_ms"]
+                    total_drops += agg["drops"]
+                    total_collisions += agg["collisions"]
+                    mac_choices.extend(agg["mac_choices"])
+                    rho_values.extend(agg["rho_values"])
+                    comm_overheads.append(marl_env.estimate_neighbor_summary_overhead_bytes())
+                    step_records = build_cluster_step_records(model_name, pps, steps, infos, marl_env.get_last_step_summary())
+                    step_cluster_throughputs.append([record.get("Throughput_Mbps", 0.0) for record in step_records])
+                    if save_raw_cluster_logs:
+                        cluster_step_records.extend(step_records)
                     steps += 1
 
                 avg_thr = total_thr / max(steps, 1)
@@ -913,10 +1067,13 @@ def step3_evaluate(pps_list, cp_dir, out_dir, log, deterministic_eval=True):
             total_count = max(tdma_count + csma_count, 1)
 
             avg_inf_ms = (total_inf_time / max(inf_steps, 1)) * 1000.0
+            flat_cluster_thr = [thr for thr_list in step_cluster_throughputs for thr in thr_list]
+            fairness = jain_fairness(flat_cluster_thr)
+            avg_active_clusters = float(np.mean([len(thr_list) for thr_list in step_cluster_throughputs])) if step_cluster_throughputs else 0.0
 
             results.append({
                 'Model': model_name,
-                'Type': 'SARL' if mtype == 'sarl' else 'MARL',
+                'Type': 'SARL' if mtype in {'sarl', 'sarl_custom'} else 'MARL',
                 'Offered_Load_pps': pps,
                 'Throughput_Mbps': round(avg_thr, 4),
                 'Delay_ms': round(avg_delay, 4),
@@ -925,7 +1082,14 @@ def step3_evaluate(pps_list, cp_dir, out_dir, log, deterministic_eval=True):
                 'Dominant_MAC': dom_mac,
                 'TDMA_Share': round(tdma_count / total_count, 4),
                 'CSMA_Share': round(csma_count / total_count, 4),
+                'Avg_Rho': round(float(np.mean(rho_values)) if rho_values else CC.DEFAULT_RHO, 4),
                 'Avg_Inference_ms': round(avg_inf_ms, 4),
+                'P95_Inference_ms': round(pxx(inf_times_ms, 95.0), 4),
+                'P99_Inference_ms': round(pxx(inf_times_ms, 99.0), 4),
+                'Fairness': round(fairness, 4),
+                'Avg_Active_Clusters': round(avg_active_clusters, 4),
+                'Decision_Overhead_Per_Cluster_ms': round(runtime_per_cluster_ms(avg_inf_ms, avg_active_clusters), 4),
+                'Avg_Comm_Overhead_Bytes': round(float(np.mean(comm_overheads)) if comm_overheads else 0.0, 4),
             })
 
             # Log eval metrics to wandb
@@ -933,13 +1097,29 @@ def step3_evaluate(pps_list, cp_dir, out_dir, log, deterministic_eval=True):
                 f"eval/{model_name}/throughput_mbps": round(avg_thr, 4),
                 f"eval/{model_name}/delay_ms": round(avg_delay, 4),
                 f"eval/{model_name}/tdma_share": round(tdma_count / total_count, 4),
+                f"eval/{model_name}/avg_rho": round(float(np.mean(rho_values)) if rho_values else CC.DEFAULT_RHO, 4),
                 f"eval/{model_name}/inference_ms": round(avg_inf_ms, 4),
             }, step=int(pps))
 
     df = pd.DataFrame(results)
-    csv_path = os.path.join(out_dir, "csv", "unified_eval_sweep.csv")
+    csv_path = os.path.join(out_dir, "csv", csv_name)
     df.to_csv(csv_path, index=False)
     log(f"  Saved: {csv_path}")
+    if save_raw_cluster_logs and cluster_step_records:
+        raw_csv_path = os.path.join(out_dir, "csv", raw_cluster_csv_name)
+        pd.DataFrame(cluster_step_records).to_csv(raw_csv_path, index=False)
+        log(f"  Saved: {raw_csv_path}")
+
+    summary = {
+        "csv_name": csv_name,
+        "raw_cluster_csv_name": raw_cluster_csv_name if save_raw_cluster_logs else None,
+        "env_reset_options": env_reset_options or {},
+        "deterministic_eval": bool(deterministic_eval),
+        "n_models": int(df["Model"].nunique()) if not df.empty else 0,
+        "n_load_points": int(df["Offered_Load_pps"].nunique()) if not df.empty else 0,
+    }
+    with open(os.path.join(out_dir, "csv", summary_json_name), "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
     return df
 
 
@@ -975,9 +1155,7 @@ def step4_reward_curves(out_dir, log):
     log(" STEP 4: Reward Training Curves (Separate SARL / MARL)")
     log("=" * 60)
 
-    # Read CSVs from cp_dir because they persist there even if USE_CHECKPOINTS_ONLY=True
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    cp_dir = os.path.join(project_root, "results", "checkpoints_unified")
+    cp_dir = os.path.join(out_dir, "checkpoints")
     img_dir = os.path.join(out_dir, "images")
 
     written = generate_plots(csv_dir=cp_dir, images_dir=img_dir)
@@ -1441,8 +1619,8 @@ def run_unified_experiment(
 ):
     """Run the full unified SARL+MARL experiment pipeline.
 
-    All RL methods train and evaluate on the same MARLMacEnv using the
-    shared network-level cooperative reward.
+    All methods train and evaluate on the same burst-split cluster env.
+    MARL uses local rewards; SARL uses the centralized team counterpart.
 
     Returns
     -------
@@ -1551,7 +1729,7 @@ def run_unified_experiment(
     )
     log("  Saved legacy baseline plots (throughput/delay/drops/collisions).")
 
-    # Step 2 — Unified training (shared reward semantics for all agents)
+    # Step 2 — Unified training on the burst-split cluster environment
     cp_dir = step2_train(
         out_dir,
         sarl_ts,
@@ -1605,6 +1783,7 @@ def run_unified_experiment(
     # Return artifact paths for programmatic use (e.g. Optuna trials)
     return {
         "out_dir": out_dir,
+        "checkpoint_dir": cp_dir,
         "eval_csv": eval_csv_path,
         "baseline_csv": baseline_csv_path,
         "summary_json": summary_json_path,

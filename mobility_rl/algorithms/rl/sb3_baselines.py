@@ -1,4 +1,5 @@
-from stable_baselines3 import DQN, PPO, A2C
+from gymnasium import spaces
+from stable_baselines3 import A2C, DQN, PPO
 from utils.device_manager import resolve_device
 
 def create_sb3_baseline(env, algo_name="dqn", seed=42):
@@ -13,6 +14,8 @@ def create_sb3_baseline(env, algo_name="dqn", seed=42):
     device = resolve_device("train")
     
     if algo_name.lower() == "dqn":
+        if isinstance(getattr(env, "action_space", None), spaces.MultiDiscrete):
+            raise ValueError("SB3 DQN does not support MultiDiscrete joint actions in SARLCentralEnv.")
         model = DQN(
             "MultiInputPolicy",
             env,
@@ -57,4 +60,3 @@ def create_sb3_baseline(env, algo_name="dqn", seed=42):
         raise ValueError(f"Unknown SB3 baseline algorithm: {algo_name}")
         
     return model
-

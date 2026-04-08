@@ -26,6 +26,29 @@ SWEEP_STEPS = 20                               # Number of granular steps in the
 # Traffic follows a Poisson process with memoryless exponential inter-arrival times.
 # Arrivals are independently sampled per node. No burst or correlated traffic is modeled.
 # Destinations are explicitly not mapped (evaluates abstract channel contention / common sink).
+TRAFFIC_PROFILE = "smooth"   # "smooth" | "bursty_on_off" | "heavy_tail"
+TRAFFIC_BURST_ON_PROB = 0.30
+TRAFFIC_BURST_MULTIPLIER = 2.0
+TRAFFIC_HEAVY_TAIL_SHAPE = 1.8
+TRAFFIC_HEAVY_TAIL_SCALE = 1.0
+
+# ==========================================
+# Evaluation Regime / Robustness Controls
+# ==========================================
+TOPOLOGY_PRESET = "default"  # "default" | "compact_dense" | "sparse_separated" | "asymmetric_hotspot"
+OBS_STALENESS_STEPS = 0
+HANDOVER_INFO_STALENESS_STEPS = 0
+OBS_NOISE_STD = 0.0
+GRAPH_MODE = "dynamic"       # "dynamic" | "none" | "static" | "shuffled"
+GRAPH_STALENESS_STEPS = 0
+GRAPH_MISSING_EDGE_PROB = 0.0
+GRAPH_FALSE_EDGE_PROB = 0.0
+FAILURE_SCHEDULE = ()
+
+# Generalization knobs. These are runtime overrides used by study harnesses.
+SPEED_SCALE = 1.0
+INTERFERENCE_SCALE = 1.0
+COORDINATION_CAPACITY_SCALE = 1.0
 
 # ==========================================
 # Logging Settings

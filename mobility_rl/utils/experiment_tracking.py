@@ -10,7 +10,6 @@ import os
 try:
     import wandb
     _HAS_WANDB = True
-    wandb.login(key="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")
 except ImportError:
     wandb = None
     _HAS_WANDB = False
@@ -19,11 +18,61 @@ except ImportError:
 _WANDB_DISABLED = os.environ.get("WANDB_DISABLED", "0") == "1"
 
 _active_run = None
+_login_attempted = False
+
+
+def _read_api_key_from_file(path: str) -> str:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def _get_api_key() -> str:
+    api_key = os.environ.get("WANDB_API_KEY", "").strip()
+    if api_key:
+        return api_key
+    api_key_file = os.environ.get("WANDB_API_KEY_FILE", "").strip()
+    if api_key_file:
+        return _read_api_key_from_file(api_key_file)
+    return ""
+
+
+def _has_saved_credentials():
+    api_key = _get_api_key()
+    if api_key:
+        return True
+    home = os.path.expanduser("~")
+    return os.path.exists(os.path.join(home, ".netrc")) or os.path.exists(os.path.join(home, "_netrc"))
 
 
 def is_enabled():
     """Check if wandb is available and not explicitly disabled."""
     return _HAS_WANDB and not _WANDB_DISABLED
+
+
+def _maybe_login():
+    """
+    Non-interactive wandb auth.
+
+    Practical rule:
+    - if WANDB_API_KEY is present, use it
+    - otherwise rely on an existing netrc/session
+    - never prompt from library import paths
+    """
+    global _login_attempted
+    if not is_enabled() or _login_attempted:
+        return
+    _login_attempted = True
+    api_key = _get_api_key()
+    if not api_key:
+        return
+    try:
+        wandb.login(key=api_key, relogin=False)
+    except Exception:
+        # Tracking should never block the experiment pipeline.
+        pass
 
 
 def init_run(project="fanet-mac-rl", config=None, run_name=None, tags=None,
@@ -54,16 +103,22 @@ def init_run(project="fanet-mac-rl", config=None, run_name=None, tags=None,
     global _active_run
     if not is_enabled():
         return None
+    if not _has_saved_credentials():
+        return None
+    _maybe_login()
 
-    _active_run = wandb.init(
-        project=project,
-        config=config or {},
-        name=run_name,
-        tags=tags,
-        group=group,
-        notes=notes,
-        reinit=reinit,
-    )
+    try:
+        _active_run = wandb.init(
+            project=project,
+            config=config or {},
+            name=run_name,
+            tags=tags,
+            group=group,
+            notes=notes,
+            reinit=reinit,
+        )
+    except Exception:
+        _active_run = None
     return _active_run
 
 
