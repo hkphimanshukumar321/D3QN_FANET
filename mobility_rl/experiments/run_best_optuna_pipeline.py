@@ -74,9 +74,9 @@ def apply_trial_config(trial_cfg: dict, final_all_algos: bool):
     reward = trial_cfg.get("reward_weights", {})
     algo = trial_cfg["algorithm"]
 
-    if algo == "tabular":
+    if algo in {"tabular", "dqn"}:
         raise ValueError(
-            "Tabular is unsupported for the current centralized MultiDiscrete burst-action baseline. "
+            f"{algo} is unsupported for the current centralized MultiDiscrete burst-action baseline. "
             "Do not include it in the tuned final pipeline."
         )
 

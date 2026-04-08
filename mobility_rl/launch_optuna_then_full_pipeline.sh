@@ -103,7 +103,7 @@ resolve_algos() {
         raw="$ALGO"
     fi
     if [[ "$raw" == "all" || "$raw" == "paper" ]]; then
-        echo "dqn ppo a2c mca_d3qn iql vdn qmix magat_d3qn"
+        echo "ppo a2c mca_d3qn iql vdn qmix magat_d3qn"
         return
     fi
     if [[ "$raw" == "all_with_tabular" ]]; then
@@ -117,15 +117,16 @@ filter_supported_algos() {
     local filtered=()
     local warned=0
     for algo in "$@"; do
-        if [[ "$algo" == "tabular" ]]; then
+        if [[ "$algo" == "tabular" || "$algo" == "dqn" ]]; then
             warned=1
             continue
         fi
         filtered+=("$algo")
     done
     if [[ "$warned" -eq 1 ]]; then
-        echo "Tabular is excluded from the tuned final pipeline." >&2
-        echo "Reason: it is unsupported for the current centralized MultiDiscrete burst-action baseline." >&2
+        echo "Unsupported algorithms were excluded from the tuned final pipeline." >&2
+        echo "Excluded: tabular, dqn" >&2
+        echo "Reason: they do not support the current centralized MultiDiscrete burst-action baseline." >&2
     fi
     printf "%s\n" "${filtered[@]}"
 }
