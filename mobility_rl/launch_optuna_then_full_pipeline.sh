@@ -113,6 +113,23 @@ resolve_algos() {
     echo "$raw" | tr ',' ' '
 }
 
+filter_supported_algos() {
+    local filtered=()
+    local warned=0
+    for algo in "$@"; do
+        if [[ "$algo" == "tabular" ]]; then
+            warned=1
+            continue
+        fi
+        filtered+=("$algo")
+    done
+    if [[ "$warned" -eq 1 ]]; then
+        echo "Tabular is excluded from the tuned final pipeline." >&2
+        echo "Reason: it is unsupported for the current centralized MultiDiscrete burst-action baseline." >&2
+    fi
+    printf "%s\n" "${filtered[@]}"
+}
+
 if [[ -f ".env.wandb" ]]; then
     # shellcheck disable=SC1091
     source ".env.wandb"
@@ -188,7 +205,15 @@ if [[ -n "${SWEEP_STEPS:-}" ]]; then
     COMMON_FINAL_ARGS+=(--sweep-steps "$SWEEP_STEPS")
 fi
 
-ALGO_LIST="$(resolve_algos "$ALGOS")"
+RESOLVED_ALGOS="$(resolve_algos "$ALGOS")"
+# shellcheck disable=SC2206
+RESOLVED_ARRAY=($RESOLVED_ALGOS)
+SUPPORTED_ALGOS="$(filter_supported_algos "${RESOLVED_ARRAY[@]}")"
+ALGO_LIST="$(echo "$SUPPORTED_ALGOS" | tr '\n' ' ' | xargs)"
+if [[ -z "$ALGO_LIST" ]]; then
+    echo "No supported algorithms left after filtering."
+    exit 1
+fi
 export ALGO_LIST_ENV="$ALGO_LIST"
 COMBINED_ROOT="$PIPELINE_ROOT/final_combined"
 COMBINED_CHECKPOINT_DIR="$COMBINED_ROOT/checkpoints"

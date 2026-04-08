@@ -74,6 +74,12 @@ def apply_trial_config(trial_cfg: dict, final_all_algos: bool):
     reward = trial_cfg.get("reward_weights", {})
     algo = trial_cfg["algorithm"]
 
+    if algo == "tabular":
+        raise ValueError(
+            "Tabular is unsupported for the current centralized MultiDiscrete burst-action baseline. "
+            "Do not include it in the tuned final pipeline."
+        )
+
     marl_overrides = {
         "LR": hyper.get("lr", MARLConfig.LR),
         "BATCH_SIZE": hyper.get("batch_size", MARLConfig.BATCH_SIZE),
