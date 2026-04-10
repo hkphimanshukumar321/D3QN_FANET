@@ -155,6 +155,11 @@ run_once() {
     check_checkpoint_targets
 
     echo ""
+    if [[ -f "utils/monitor_optuna_eta.py" ]]; then
+        python utils/monitor_optuna_eta.py "$PIPELINE_ROOT"
+    fi
+
+    echo ""
     echo "Recent log scan:"
     scan_logs
     echo ""
