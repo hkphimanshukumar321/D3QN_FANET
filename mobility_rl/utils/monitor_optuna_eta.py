@@ -61,8 +61,11 @@ def main():
         
         complete = [t for t in trials if t.state == optuna.trial.TrialState.COMPLETE]
         running = [t for t in trials if t.state == optuna.trial.TrialState.RUNNING]
+        failed = [t for t in trials if t.state == optuna.trial.TrialState.FAIL]
         
         num_complete = len(complete)
+        num_running = max(len(running), 1)  # avoid division by zero
+        num_failed = len(failed)
         remaining = max(0, target - num_complete)
         
         durations = []
@@ -71,15 +74,17 @@ def main():
                 durations.append((t.datetime_complete - t.datetime_start).total_seconds())
         
         avg_duration = sum(durations) / len(durations) if durations else 0
-        eta_seconds = remaining * avg_duration
+        # Divide by number of parallel workers for realistic ETA
+        eta_seconds = (remaining * avg_duration) / num_running
         
         if remaining == 0:
             eta_str = "COMPLETED"
         else:
             eta_delta = datetime.timedelta(seconds=int(eta_seconds))
-            eta_str = f"ETA: {eta_delta} ({len(running)} running)"
-            
-        print(f"  {study_name:<30} | {num_complete:>2}/{target:<2} trials | Avg: {avg_duration:5.1f}s | {eta_str}")
+            eta_str = f"ETA: {eta_delta} ({len(running)} workers)"
+        
+        fail_str = f" | {num_failed} FAILED" if num_failed > 0 else ""
+        print(f"  {study_name:<30} | {num_complete:>2}/{target:<2} trials | Avg: {avg_duration:5.1f}s | {eta_str}{fail_str}")
 
 if __name__ == "__main__":
     main()
