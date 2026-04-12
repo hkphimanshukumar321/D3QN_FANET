@@ -183,3 +183,10 @@ test_run.py
 # Model Checkpoints (Heavy Binaries)
 results/checkpoints/
 results
+
+# LaTeX / paper template directories
+alternate_tj_latex_template_ap/
+
+# Large data files
+cluster_step_records.csv
+*.db
