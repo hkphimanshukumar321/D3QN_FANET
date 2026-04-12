@@ -14,17 +14,22 @@ def main():
     if not os.path.exists(pipeline_root):
         return
 
-    # Find status files
+    # Find status files natively in the results/optuna directory
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    optuna_root = os.path.join(project_root, "results", "optuna")
+    
     status_files = []
-    for f in os.listdir(pipeline_root):
-        if f.startswith("target_trials_status") and f.endswith(".json"):
-            status_files.append(os.path.join(pipeline_root, f))
+    if os.path.exists(optuna_root):
+        for root_dir, _, files in os.walk(optuna_root):
+            for f in files:
+                if f == "target_trials_status.json":
+                    status_files.append(os.path.join(root_dir, f))
     
     if not status_files:
+        print("No active Optuna ETA trackers found.")
         return
         
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    
+
     print("Optuna Study Progress & ETA:")
     for status_file in status_files:
         try:

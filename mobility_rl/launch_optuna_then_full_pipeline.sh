@@ -179,6 +179,9 @@ fi
 if [[ -n "${SEED:-}" ]]; then
     COMMON_OPTUNA_ARGS+=(--seed "$SEED")
 fi
+if [[ -n "${OPTUNA_N_JOBS:-}" ]]; then
+    COMMON_OPTUNA_ARGS+=(--n-jobs "$OPTUNA_N_JOBS" --max-concurrent-gpu-trials "$OPTUNA_N_JOBS")
+fi
 
 COMMON_FINAL_ARGS=()
 if [[ "$DRY_RUN" == "1" ]]; then

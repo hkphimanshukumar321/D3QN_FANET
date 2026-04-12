@@ -46,6 +46,20 @@ check_pid_file() {
     local pid_file="$1"
     local name
     name="$(basename "$pid_file" .pid)"
+    
+    # Verify status file first to avoid PID recycling false-positives
+    local status_file
+    status_file="$(dirname "$(dirname "$pid_file")")/status/${name}.status"
+    if [[ -f "$status_file" ]]; then
+        local st
+        st="$(head -n 1 "$status_file" 2>/dev/null || echo "MISSING")"
+        if [[ "$st" == "COMPLETED" || "$st" == DETACHED* || "$st" == FAILED* ]]; then
+            # If the stage is definitively done or detached, just show that status
+            printf "%-32s %-10s %s\n" "$name" "($st)" "$pid_file"
+            return
+        fi
+    fi
+
     local pid
     pid="$(tr -d '[:space:]' < "$pid_file" 2>/dev/null || true)"
     local status="UNKNOWN"
