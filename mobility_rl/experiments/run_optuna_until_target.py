@@ -165,41 +165,44 @@ def main():
             print(json.dumps(summary, indent=2))
             return
 
-        cmd = [
-            sys.executable,
-            os.path.join(project_root, "experiments", "run_pareto_optuna.py"),
-            "--algo", args.algo,
-            "--study-name", args.study_name,
-            "--objectives", *objectives,
-            "--n-trials", str(remaining),
-            "--seed", str(args.seed),
-            "--n-jobs", str(args.n_jobs),
-            "--max-concurrent-gpu-trials", str(args.max_concurrent_gpu_trials),
-            "--intra-trial-workers", str(args.intra_trial_workers),
-        ]
-        if args.include_inference:
-            cmd.append("--include-inference")
-        if args.dry_run:
-            cmd.append("--dry-run")
-        if args.force_retrain:
-            cmd.append("--force-retrain")
-        if args.gpu_ids is not None:
-            cmd.extend(["--gpu-ids", args.gpu_ids])
-        if args.phy_rate_mbps is not None:
-            cmd.extend(["--phy-rate-mbps", str(args.phy_rate_mbps)])
-        if args.nodes is not None:
-            cmd.extend(["--nodes", str(args.nodes)])
-        if args.qmax is not None:
-            cmd.extend(["--qmax", str(args.qmax)])
-        if args.sweep_min_pps is not None:
-            cmd.extend(["--sweep-min-pps", str(args.sweep_min_pps)])
-        if args.sweep_max_pps is not None:
-            cmd.extend(["--sweep-max-pps", str(args.sweep_max_pps)])
-        if args.sweep_steps is not None:
-            cmd.extend(["--sweep-steps", str(args.sweep_steps)])
+    # Build command OUTSIDE the lock so all workers can train concurrently
+    cmd = [
+        sys.executable,
+        os.path.join(project_root, "experiments", "run_pareto_optuna.py"),
+        "--algo", args.algo,
+        "--study-name", args.study_name,
+        "--objectives", *objectives,
+        "--n-trials", str(remaining),
+        "--seed", str(args.seed),
+        "--n-jobs", str(args.n_jobs),
+        "--max-concurrent-gpu-trials", str(args.max_concurrent_gpu_trials),
+        "--intra-trial-workers", str(args.intra_trial_workers),
+    ]
+    if args.include_inference:
+        cmd.append("--include-inference")
+    if args.dry_run:
+        cmd.append("--dry-run")
+    if args.force_retrain:
+        cmd.append("--force-retrain")
+    if args.gpu_ids is not None:
+        cmd.extend(["--gpu-ids", args.gpu_ids])
+    if args.phy_rate_mbps is not None:
+        cmd.extend(["--phy-rate-mbps", str(args.phy_rate_mbps)])
+    if args.nodes is not None:
+        cmd.extend(["--nodes", str(args.nodes)])
+    if args.qmax is not None:
+        cmd.extend(["--qmax", str(args.qmax)])
+    if args.sweep_min_pps is not None:
+        cmd.extend(["--sweep-min-pps", str(args.sweep_min_pps)])
+    if args.sweep_max_pps is not None:
+        cmd.extend(["--sweep-max-pps", str(args.sweep_max_pps)])
+    if args.sweep_steps is not None:
+        cmd.extend(["--sweep-steps", str(args.sweep_steps)])
 
-        subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True)
 
+    # Update summary after training completes
+    with file_lock(lock_path):
         complete_after = count_complete_trials(full_study_name, storage, directions, objectives)
         summary["complete_after"] = complete_after
         summary["remaining_after"] = max(0, target_complete - complete_after)
