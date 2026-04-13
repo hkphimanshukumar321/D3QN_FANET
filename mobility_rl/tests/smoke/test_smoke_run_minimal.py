@@ -1,35 +1,34 @@
 import pytest
-import os
-import sys
+
 
 @pytest.mark.smoke
-def test_minimal_simulation_loop(project_root, mock_results_dir, monkeypatch):
-    """
-    Verifies that the `simulator_ui.engine.SimulationEngine` can be instantiated
-    and stepped for a minimal duration without raising unhandled exceptions.
-    """
-    sys.path.insert(0, project_root)
-    
-    # Isolate global configuration for testing
-    from configs import config
-    
-    # We patch global configurations to enforce a tiny, fast run
-    monkeypatch.setattr(config, "N", 2)
-    monkeypatch.setattr(config, "SIM_TIME_S", 0.05)
-    monkeypatch.setattr(config, "RL_DECISION_INTERVAL", 10, raising=False)
-    monkeypatch.setattr(config, "ENABLE_RL_SELECTOR", False, raising=False)
-    
+def test_minimal_simulation_loop(mock_results_dir):
+    """The live UI engine should reset and step a small decentralized session."""
     from simulator_ui.engine import SimulationEngine
-    
-    engine = SimulationEngine()
-    engine.output_dir = mock_results_dir  # Override so we don't pollute real results
-    
+
+    engine = SimulationEngine(
+        config={
+            "base_params": {
+                "N": 12,
+                "SIM_TIME_S": 2.0,
+                "AREA_X": 120,
+                "AREA_Y": 120,
+                "AREA_Z": 40,
+                "SEED": 7,
+            },
+            "runtime": {"policy_id": "fixed:all_tdma_mid"},
+        }
+    )
+    engine.output_dir = mock_results_dir
+
     try:
         engine.reset()
-        # Run a few ticks manually
         for _ in range(5):
-            engine.tick()
-    except Exception as e:
-        pytest.fail(f"Minimal simulation loop crashed with error: {e}")
-        
-    assert engine.tick_count == 5, "Engine failed to advance ticks properly."
+            snapshot = engine.tick()
+    except Exception as exc:
+        pytest.fail(f"Minimal simulation loop crashed with error: {exc}")
+
+    assert engine.tick_count == 5
+    assert snapshot["tick"] == 5
+    assert len(snapshot["nodes"]) == 12
+    assert "clusters" in snapshot and "graphs" in snapshot

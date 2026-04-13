@@ -3,289 +3,259 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FANET 3D Simulator — Adaptive MAC</title>
-    <meta name="description" content="Real-time 3D UAV FANET simulation with TDMA/CSMA adaptive MAC and Q-Learning">
+    <title>Decentralized FANET Research Dashboard</title>
+    <meta name="description" content="Research-operations dashboard for the decentralized MARLMacEnv visualizer">
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-    <!-- Top Bar -->
     <header id="top-bar">
-        <div class="top-left">
-            <span class="logo">◈ FANET 3D</span>
-            <span class="subtitle">Adaptive MAC Simulator</span>
+        <div class="brand-block">
+            <div class="brand-title">Decentralized FANET</div>
+            <div class="brand-subtitle">Research Operations Dashboard</div>
         </div>
-        <div class="top-center">
+
+        <div class="control-block">
             <div class="playback-controls">
-                <button id="btn-reset" title="Reset"><span class="icon">⟲</span></button>
-                <button id="btn-step" title="Step"><span class="icon">⏭</span></button>
-                <button id="btn-play" title="Play" class="primary"><span class="icon">▶</span></button>
-                <button id="btn-pause" title="Pause"><span class="icon">⏸</span></button>
-                <button id="btn-export" title="Export results"><span class="icon">⬇</span></button>
+                <button id="btn-reset" title="Reset">Reset</button>
+                <button id="btn-step" title="Step">Step</button>
+                <button id="btn-play" title="Run" class="primary">Run</button>
+                <button id="btn-pause" title="Pause">Pause</button>
+                <button id="btn-export" title="Export">Export</button>
             </div>
-            <div class="sim-info">
-                <span id="sim-time">t = 0.000 s</span>
-                <span id="sim-tick">tick: 0</span>
-                <span id="sim-protocol" class="badge">CSMA_CA</span>
-            </div>
-        </div>
-        <div class="top-right">
             <label class="speed-control">
-                Speed: <input type="range" id="speed-slider" min="0.1" max="10" step="0.1" value="1">
-                <span id="speed-val">1.0×</span>
+                <span>Speed</span>
+                <input type="range" id="speed-slider" min="0.1" max="8" step="0.1" value="1">
+                <span id="speed-val">1.0x</span>
             </label>
-            <span id="ws-status" class="ws-dot disconnected" title="WebSocket status">●</span>
+        </div>
+
+        <div class="status-strip">
+            <div class="status-card">
+                <span class="status-label">Session</span>
+                <span class="status-value" id="status-session">Paused</span>
+                <span class="status-meta" id="status-time">t = 0.00 s</span>
+            </div>
+            <div class="status-card">
+                <span class="status-label">Tick</span>
+                <span class="status-value" id="status-tick">0</span>
+                <span class="status-meta" id="status-ws">offline</span>
+            </div>
+            <div class="status-card">
+                <span class="status-label">Policy</span>
+                <span class="status-value" id="status-policy">Policy</span>
+                <span class="status-meta" id="status-policy-source">source</span>
+            </div>
+            <div class="status-card">
+                <span class="status-label">MAC Mix</span>
+                <span class="status-value" id="status-mac">0 / 0</span>
+                <span class="status-meta" id="status-policy-compat">compat</span>
+            </div>
+            <div class="status-card">
+                <span class="status-label">Preset</span>
+                <span class="status-value" id="status-preset">Preset</span>
+                <span class="status-meta" id="status-study-block">study</span>
+            </div>
+            <div class="status-card wide warning" id="warning-card">
+                <span class="status-label">Runtime Truth</span>
+                <span class="status-value" id="status-warning">No warnings</span>
+                <span class="status-meta">Fallbacks and incompatibilities surface here</span>
+            </div>
         </div>
     </header>
 
-    <!-- Main Layout -->
-    <main id="app-layout">
-        <!-- 3D Viewport -->
-        <section id="viewport">
-            <canvas id="three-canvas"></canvas>
-            <!-- Metric badges overlay -->
-            <div id="metric-badges">
-                <div class="metric-badge" id="badge-throughput">
-                    <span class="metric-label">Throughput</span>
-                    <span class="metric-value" id="val-throughput">0.00 Mbps</span>
+    <main id="dashboard-layout">
+        <section id="scene-column">
+            <section id="viewport">
+                <canvas id="three-canvas"></canvas>
+                <div id="scene-overlay">
+                    <div class="overlay-card" id="scene-hint">Click a node in the scene or a cluster card in the rail to inspect it.</div>
+                    <div class="overlay-legend">
+                        <div class="legend-row"><span class="legend-swatch solid cluster"></span><span>Member-to-leader links</span></div>
+                        <div class="legend-row"><span class="legend-swatch solid true-edge"></span><span>True interference edges</span></div>
+                        <div class="legend-row"><span class="legend-swatch dashed observed-edge"></span><span>Observed policy graph</span></div>
+                    </div>
                 </div>
-                <div class="metric-badge" id="badge-delay">
-                    <span class="metric-label">Avg Delay</span>
-                    <span class="metric-value" id="val-delay">0.00 ms</span>
-                </div>
-                <div class="metric-badge" id="badge-drops">
-                    <span class="metric-label">Drops</span>
-                    <span class="metric-value" id="val-drops">0</span>
-                </div>
-                <div class="metric-badge" id="badge-linkup">
-                    <span class="metric-label">Link-Up</span>
-                    <span class="metric-value" id="val-linkup">100%</span>
-                </div>
-            </div>
+            </section>
         </section>
 
-        <!-- Right Sidebar: Config Panels -->
-        <aside id="sidebar">
-            <div class="sidebar-scroll">
-                <!-- World -->
-                <details class="panel" open>
-                    <summary>🌐 World &amp; Scenario</summary>
+        <aside id="ops-rail">
+            <div class="rail-scroll">
+                <section class="panel">
+                    <h2>Scenario Library</h2>
                     <div class="panel-body">
-                        <div class="field-row">
-                            <label>A (X) m</label><input type="number" data-key="AREA_X" value="1000" step="50" min="10">
-                        </div>
-                        <div class="field-row">
-                            <label>B (Y) m</label><input type="number" data-key="AREA_Y" value="1000" step="50" min="10">
-                        </div>
-                        <div class="field-row">
-                            <label>C (Z) m</label><input type="number" data-key="AREA_Z" value="300" step="10" min="10">
-                        </div>
-                        <div class="field-row">
-                            <label>N (UAVs)</label><input type="number" data-key="N" value="70" min="1" max="500">
-                        </div>
-                        <div class="field-row">
-                            <label>Sink X</label><input type="number" data-key="SINK_X" value="500" step="10">
-                        </div>
-                        <div class="field-row">
-                            <label>Sink Y</label><input type="number" data-key="SINK_Y" value="500" step="10">
-                        </div>
-                        <div class="field-row">
-                            <label>Sink Z</label><input type="number" data-key="SINK_Z" value="0" step="5">
-                        </div>
-                        <div class="field-row">
-                            <label>Comm Range m</label><input type="number" data-key="COMM_RANGE_R" value="500" step="10" min="1">
-                        </div>
-                        <div class="field-row">
-                            <label>Seed</label><input type="number" data-key="SEED" value="42" min="0">
-                        </div>
+                        <label class="field-stack">
+                            <span>Preset</span>
+                            <select id="preset-select"></select>
+                        </label>
+                        <div id="scenario-summary" class="readout-block"></div>
                     </div>
-                </details>
+                </section>
 
-                <!-- Mobility -->
-                <details class="panel" open>
-                    <summary>✈ Mobility (3D)</summary>
+                <section class="panel">
+                    <h2>Runtime Truth</h2>
                     <div class="panel-body">
-                        <div class="field-row">
-                            <label>Model</label>
-                            <select data-key="MOBILITY_MODEL">
-                                <option value="gauss_markov">Gauss-Markov</option>
-                                <option value="random_waypoint">Random Waypoint</option>
-                                <option value="random_walk">Random Walk</option>
-                                <option value="circular">Circular/Spiral</option>
-                            </select>
-                        </div>
-                        <div class="field-row">
-                            <label>Speed Mode</label>
-                            <select data-key="SPEED_MODE">
-                                <option value="uniform">Uniform</option>
-                                <option value="gaussian">Gaussian</option>
-                                <option value="per_node_uniform">Per-Node</option>
-                                <option value="piecewise">Piecewise</option>
-                            </select>
-                        </div>
-                        <div class="field-row">
-                            <label>V_MIN m/s</label><input type="number" data-key="V_MIN" value="5" step="1" min="0">
-                        </div>
-                        <div class="field-row">
-                            <label>V_MAX m/s</label><input type="number" data-key="V_MAX" value="30" step="1" min="1">
-                        </div>
-                        <div class="field-row">
-                            <label>V_MEAN m/s</label><input type="number" data-key="V_MEAN" value="15" step="1">
-                        </div>
-                        <div class="field-row">
-                            <label>V_STD m/s</label><input type="number" data-key="V_STD" value="5" step="0.5">
-                        </div>
-                        <div class="field-row">
-                            <label>Update Int. s</label><input type="number" data-key="SPEED_UPDATE_INTERVAL" value="5" step="0.5" min="0.1">
-                        </div>
-                        <div class="field-row">
-                            <label>GM Alpha</label><input type="number" data-key="GM_ALPHA" value="0.5" step="0.05" min="0" max="1">
-                        </div>
-                        <div class="field-row">
-                            <label>RWP Pause s</label><input type="number" data-key="RWP_PAUSE_TIME" value="1" step="0.5" min="0">
-                        </div>
-                        <div class="field-row">
-                            <label>Circ Radius m</label><input type="number" data-key="CIRC_RADIUS" value="100" step="10" min="1">
-                        </div>
-                        <div class="field-row">
-                            <label>Circ Omega</label><input type="number" data-key="CIRC_OMEGA_MEAN" value="0.1" step="0.01">
-                        </div>
-                        <div class="field-row">
-                            <label>Climb Rate m/s</label><input type="number" data-key="CIRC_CLIMB_RATE" value="0.5" step="0.1">
-                        </div>
-                    </div>
-                </details>
-
-                <!-- MAC -->
-                <details class="panel" open>
-                    <summary>📡 MAC Protocol</summary>
-                    <div class="panel-body">
-                        <div class="field-row">
-                            <label>Protocol</label>
-                            <select data-key="MAC_PROTOCOL">
-                                <option value="CSMA_CA">CSMA/CA</option>
-                                <option value="TDMA">TDMA</option>
-                            </select>
-                        </div>
-                        <div class="field-row">
-                            <label>CW_MIN</label><input type="number" data-key="CW_MIN" value="15" min="1">
-                        </div>
-                        <div class="field-row">
-                            <label>CW_MAX</label><input type="number" data-key="CW_MAX" value="1023" min="1">
-                        </div>
-                        <div class="field-row">
-                            <label>DIFS slots</label><input type="number" data-key="DIFS_SLOTS" value="4" min="0">
-                        </div>
-                        <div class="field-row">
-                            <label>SIFS slots</label><input type="number" data-key="SIFS_SLOTS" value="2" min="0">
-                        </div>
-                        <div class="field-row">
-                            <label>Max Retry</label><input type="number" data-key="MAX_RETRY" value="10" min="1">
-                        </div>
-                        <div class="field-row toggle-row">
-                            <label>RTS/CTS</label>
-                            <label class="toggle"><input type="checkbox" data-key="RTS_CTS_ENABLED" checked><span class="slider"></span></label>
-                        </div>
-                        <div class="field-row toggle-row">
-                            <label>ACK</label>
-                            <label class="toggle"><input type="checkbox" data-key="ACK_ENABLED" checked><span class="slider"></span></label>
-                        </div>
-                        <div class="field-row">
-                            <label>Guard Time μs</label><input type="number" data-key="TDMA_GUARD_TIME_S" value="1" step="0.5" min="0">
-                        </div>
-                    </div>
-                </details>
-
-                <!-- Traffic -->
-                <details class="panel" open>
-                    <summary>📊 Traffic &amp; Queue</summary>
-                    <div class="panel-body">
-                        <div class="field-row">
-                            <label>Load pps</label><input type="number" data-key="OFFERED_PPS" value="200" min="1" step="10">
-                        </div>
-                        <div class="field-row">
-                            <label>Pkt Bytes</label><input type="number" data-key="PAYLOAD_BYTES" value="1500" min="64">
-                        </div>
-                        <div class="field-row">
-                            <label>QMAX</label><input type="number" data-key="QMAX" value="100" min="1">
-                        </div>
-                    </div>
-                </details>
-
-                <!-- RL -->
-                <details class="panel">
-                    <summary>🧠 RL Selector</summary>
-                    <div class="panel-body">
-                        <div class="field-row toggle-row">
-                            <label>Enable RL</label>
-                            <label class="toggle"><input type="checkbox" data-key="ENABLE_RL_SELECTOR"><span class="slider"></span></label>
-                        </div>
-                        <div class="field-row">
-                            <label>Alpha</label><input type="number" data-key="RL_ALPHA" value="0.1" step="0.01" min="0" max="1">
-                        </div>
-                        <div class="field-row">
-                            <label>Epsilon</label><input type="number" data-key="RL_EPSILON" value="0" step="0.01" min="0" max="1">
-                        </div>
-                        <div class="field-row">
-                            <label>w_T</label><input type="number" data-key="RL_WT" value="0.5" step="0.05" min="0" max="1">
-                        </div>
-                        <div class="field-row">
-                            <label>w_D</label><input type="number" data-key="RL_WD" value="0.5" step="0.05" min="0" max="1">
-                        </div>
-                        <div class="field-row">
-                            <label>Bins</label><input type="number" data-key="RL_TRAFFIC_BINS" value="14" min="1">
-                        </div>
-                    </div>
-                </details>
-
-                <!-- Apply Mode -->
-                <details class="panel" open>
-                    <summary>⚙ Apply Mode</summary>
-                    <div class="panel-body">
-                        <div class="field-row toggle-row">
-                            <label>Live Apply</label>
+                        <label class="field-stack">
+                            <span>Policy</span>
+                            <select id="policy-select"></select>
+                        </label>
+                        <label class="toggle-row">
+                            <span>Deterministic</span>
                             <label class="toggle">
-                                <input type="checkbox" id="apply-mode-toggle" checked>
+                                <input type="checkbox" id="deterministic-toggle" checked>
                                 <span class="slider"></span>
                             </label>
-                        </div>
-                        <p class="hint" id="apply-hint">Changes take effect at next tick boundary.</p>
+                        </label>
+                        <div id="runtime-note" class="readout-block empty">Policy diagnostics appear here.</div>
+                        <div id="policy-compat-list" class="stack-list empty-state">Compatibility notes appear here.</div>
+                        <div id="action-semantics" class="readout-block empty">Action semantics appear here.</div>
                     </div>
-                </details>
+                </section>
+
+                <section class="panel">
+                    <h2>Base Config</h2>
+                    <div class="panel-body">
+                        <div class="inline-note">Changing base config resets and rebuilds the live session.</div>
+                        <div class="compact-grid">
+                            <label class="field-stack">
+                                <span>N</span>
+                                <input type="number" data-base-key="N" min="1" step="1">
+                            </label>
+                            <label class="field-stack">
+                                <span>Seed</span>
+                                <input type="number" data-base-key="SEED" min="0" step="1">
+                            </label>
+                            <label class="field-stack">
+                                <span>Area X</span>
+                                <input type="number" data-base-key="AREA_X" min="10" step="10">
+                            </label>
+                            <label class="field-stack">
+                                <span>Area Y</span>
+                                <input type="number" data-base-key="AREA_Y" min="10" step="10">
+                            </label>
+                            <label class="field-stack">
+                                <span>Area Z</span>
+                                <input type="number" data-base-key="AREA_Z" min="10" step="5">
+                            </label>
+                            <label class="field-stack">
+                                <span>Load pps</span>
+                                <input type="number" data-base-key="OFFERED_PPS" min="1" step="10">
+                            </label>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="panel panel-details">
+                    <details open>
+                        <summary>Advanced Env Controls</summary>
+                        <div class="panel-body">
+                            <div class="inline-note">Use these to reproduce study impairments and scenario overrides. Each apply/clear action rebuilds the live env.</div>
+                            <div id="advanced-env-controls" class="control-groups"></div>
+                        </div>
+                    </details>
+                </section>
+
+                <section class="panel">
+                    <h2>Active Clusters</h2>
+                    <div class="panel-body">
+                        <div id="cluster-list" class="cluster-list"></div>
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <h2>Selected Cluster</h2>
+                    <div class="panel-body">
+                        <div id="cluster-inspector" class="readout-block empty">Select a live cluster to inspect its burst action, health, and backlog.</div>
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <h2>Selected Node</h2>
+                    <div class="panel-body">
+                        <div id="node-inspector" class="readout-block empty">Select a node from the scene or from the selected cluster.</div>
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <h2>Graph / Debug State</h2>
+                    <div class="panel-body">
+                        <div id="graph-inspector" class="readout-block empty">Graph diagnostics appear here.</div>
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <h2>Event Feed</h2>
+                    <div class="panel-body">
+                        <div id="event-feed" class="event-feed empty-state">No events yet.</div>
+                    </div>
+                </section>
             </div>
         </aside>
     </main>
 
-    <!-- Bottom Charts Strip -->
-    <footer id="charts-strip">
-        <div class="chart-container">
-            <canvas id="chart-throughput"></canvas>
-            <span class="chart-title">Throughput (Mbps)</span>
+    <section id="analysis-strip">
+        <div class="analysis-toolbar">
+            <div class="analysis-tabs">
+                <button type="button" class="analysis-tab active" data-analysis-mode="live">Live Metrics</button>
+                <button type="button" class="analysis-tab" data-analysis-mode="diagnostics">Study Diagnostics</button>
+            </div>
+            <div id="analysis-summary" class="inline-note">Rolling burst-level traces.</div>
         </div>
-        <div class="chart-container">
-            <canvas id="chart-delay"></canvas>
-            <span class="chart-title">Delay (ms)</span>
-        </div>
-        <div class="chart-container">
-            <canvas id="chart-queue"></canvas>
-            <span class="chart-title">Queue (pkts)</span>
-        </div>
-        <div class="chart-container">
-            <canvas id="chart-linkup"></canvas>
-            <span class="chart-title">Link-Up Ratio</span>
-        </div>
-    </footer>
 
-    <!-- Status popup -->
+        <div id="analysis-live" class="analysis-view active">
+            <div class="chart-container">
+                <canvas id="chart-throughput"></canvas>
+                <span class="chart-title">Throughput</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-coord"></canvas>
+                <span class="chart-title">Coordination Success</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-clusters"></canvas>
+                <span class="chart-title">Active Clusters</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-density"></canvas>
+                <span class="chart-title">Graph Density</span>
+            </div>
+        </div>
+
+        <div id="analysis-diagnostics" class="analysis-view diagnostics-view">
+            <div class="diag-card">
+                <span class="diag-label">Avg Local Backlog</span>
+                <span class="diag-value" id="diag-local-backlog">0.00</span>
+            </div>
+            <div class="diag-card">
+                <span class="diag-label">Avg Inter Backlog</span>
+                <span class="diag-value" id="diag-inter-backlog">0.00</span>
+            </div>
+            <div class="diag-card">
+                <span class="diag-label">Decision Overhead</span>
+                <span class="diag-value" id="diag-overhead">0 B</span>
+            </div>
+            <div class="diag-card">
+                <span class="diag-label">Event Counts</span>
+                <span class="diag-value" id="diag-event-counts">S0 M0 R0 H0 F0</span>
+            </div>
+            <div class="diag-card wide">
+                <span class="diag-label">Scenario Context</span>
+                <div id="diag-scenario-context" class="readout-block empty">Scenario context appears here.</div>
+            </div>
+            <div class="diag-card wide">
+                <span class="diag-label">Impairment Summary</span>
+                <div id="diag-impairments" class="readout-block empty">Impairments appear here.</div>
+            </div>
+        </div>
+    </section>
+
     <div id="toast" class="toast hidden"></div>
 
-    <!-- CDN Libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-
-    <!-- App Scripts -->
     <script src="js/ws.js"></script>
     <script src="js/scene.js"></script>
     <script src="js/charts.js"></script>

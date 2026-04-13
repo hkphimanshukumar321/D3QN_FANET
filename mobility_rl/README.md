@@ -1,5 +1,16 @@
 # FANET Hybrid MAC Protocol Validation Framework
 
+## Live Simulator UI
+
+`simulator_ui` now runs the decentralized cluster-head environment in `envs/marl_mac_env.py`.
+
+- The browser visualizes live UAV membership, cluster leaders, member-to-leader links, and true vs observed interference edges.
+- The UI uses named presets drawn from the generalization, robustness, and failure-recovery study suites instead of the old sink-centric controls.
+- Runtime action selection is policy-driven. It prefers available MARL checkpoints such as `MAGAT-D3QN` and falls back to fixed baselines like `All TDMA (mid rho)`.
+- UI exports are decentralized artifacts: `mobility_positions.csv`, `cluster_step_records.csv`, `cluster_graph_edges.csv`, and `node_cluster_membership.csv`.
+
+Older README sections still describe the historical many-to-one simulator and baseline study setup. Treat the `simulator_ui` behavior and export format as defined by the current code in `simulator_ui/`.
+
 This repository provides a rigorous, generic, and mathematically unbiased simulation environment for comparing multiple Medium Access Control (MAC) protocols, currently strictly validating **Slotted ALOHA**, **Round-robin TDMA**, and **CSMA/CA (802.11 DCF-style)**.
 
 The framework explores throughput limits, channel utilization, and queuing dynamics under heavy scaling—specifically designed for Unmanned Aerial Vehicles (UAVs) / Flying Ad-Hoc Networks (FANETs).

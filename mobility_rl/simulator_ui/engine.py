@@ -1,627 +1,1615 @@
-# engine.py — Tick-based Simulation Engine for Real-Time 3D Simulator
-# Wraps mobility + MAC into a step-able interface for WebSocket streaming.
+"""Live decentralized simulator backend for the browser UI.
 
+The public entrypoint remains ``SimulationEngine``, but the implementation now
+owns a live ``MARLMacEnv`` session and exposes cluster-aware snapshots instead
+of the old sink-centric simulator contract.
+"""
+
+from __future__ import annotations
+
+import copy
+import datetime as dt
+import json
 import os
 import sys
-import json
-import math
-import datetime
+from zipfile import ZipFile
+from pathlib import Path
+from typing import Any
+
 import numpy as np
 import pandas as pd
 
-# Add project root
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from algorithms.mobility.speed import SpeedEngine
-from algorithms.mobility.models import create_mobility_model
-from algorithms.mobility.link import compute_distances, compute_link_up
-from algorithms.rl.qlearning_selector import QLearningAgent
+from configs import config as params
+from configs.cluster_config import ClusterConfig as CC
+from configs.marl_config import MARLConfig
+from envs.burst_scheduler import VALID_RHO_LEVELS, encode_action
+from envs.marl_mac_env import MARLMacEnv
+from envs.sarl_central_env import SARLCentralEnv
 
 
-# ======================================================================
-# Default config (mirrors config.py defaults)
-# ======================================================================
-DEFAULT_CONFIG = {
-    # World
-    "N": 70, "AREA_X": 1000.0, "AREA_Y": 1000.0, "AREA_Z": 300.0,
-    "SINK_X": 500.0, "SINK_Y": 500.0, "SINK_Z": 0.0,
-    "COMM_RANGE_R": 500.0, "SEED": 42,
-    # Mobility
-    "MOBILITY_MODEL": "gauss_markov", "SPEED_MODE": "uniform",
-    "V_MIN": 5.0, "V_MAX": 30.0, "V_MEAN": 15.0, "V_STD": 5.0,
-    "SPEED_UPDATE_INTERVAL": 5.0,
-    "GM_ALPHA": 0.5, "RWP_PAUSE_TIME": 1.0,
-    "CIRC_RADIUS": 100.0, "CIRC_OMEGA_MEAN": 0.1,
-    "CIRC_OMEGA_STD": 0.02, "CIRC_CLIMB_RATE": 0.5,
-    "MOBILITY_DT": 0.1,
-    # MAC
-    "MAC_PROTOCOL": "CSMA_CA",
-    "SLOT_TIME_S": 9e-6, "PHY_RATE_BPS": 5e6,
-    "PAYLOAD_BYTES": 1500, "QMAX": 100,
-    "CW_MIN": 15, "CW_MAX": 1023, "DIFS_SLOTS": 4, "SIFS_SLOTS": 2,
-    "ACK_SLOTS": 2, "ACK_TIMEOUT_SLOTS": 10, "MAX_RETRY": 10,
-    "RTS_CTS_ENABLED": True, "ACK_ENABLED": True,
-    "RTS_SLOTS": 3, "CTS_SLOTS": 3,
-    "TDMA_GUARD_TIME_S": 1e-6,
-    # Traffic
-    "OFFERED_PPS": 200,
-    # RL
-    "ENABLE_RL_SELECTOR": True,
-    "RL_ALPHA": 0.1, "RL_GAMMA": 0.0, "RL_EPSILON": 0.0,
-    "RL_WT": 0.5, "RL_WD": 0.5, "RL_TRAFFIC_BINS": 14,
-    "RL_DECISION_INTERVAL": 10,  # ticks between RL decisions
-    # Pathloss
-    "ENABLE_PATHLOSS": True, "PATHLOSS_K": 0.001, "PATHLOSS_ETA": 2.0,
-    "ENABLE_PROP_DELAY": True,
-    # MARL
-    "ENABLE_MARL": True,
-    # Render
-    "RENDER_INTERPOLATION": True, "SNAPSHOT_BUFFER_SIZE": 2,
+BASE_PARAM_KEYS = (
+    "N",
+    "SEED",
+    "SIM_TIME_S",
+    "MAX_STEPS_PER_EP",
+    "AREA_X",
+    "AREA_Y",
+    "AREA_Z",
+    "MOBILITY_MODEL",
+    "SPEED_MODE",
+    "V_MIN",
+    "V_MAX",
+    "V_MEAN",
+    "V_STD",
+    "SPEED_UPDATE_INTERVAL",
+    "GM_ALPHA",
+    "RWP_PAUSE_TIME",
+    "CIRC_RADIUS",
+    "CIRC_OMEGA_MEAN",
+    "CIRC_OMEGA_STD",
+    "CIRC_CLIMB_RATE",
+    "MOBILITY_DT",
+    "PHY_RATE_BPS",
+    "PAYLOAD_BYTES",
+    "QMAX",
+    "CW_MIN",
+    "CW_MAX",
+    "DIFS_SLOTS",
+    "SIFS_SLOTS",
+    "ACK_SLOTS",
+    "ACK_TIMEOUT_SLOTS",
+    "MAX_RETRY",
+    "RTS_CTS_ENABLED",
+    "ACK_ENABLED",
+    "RTS_SLOTS",
+    "CTS_SLOTS",
+    "TDMA_GUARD_TIME_S",
+    "OFFERED_PPS",
+    "ENABLE_FADING",
+    "FADING_MODEL",
+    "NAKAGAMI_M",
+    "NAKAGAMI_OMEGA",
+    "RICIAN_K",
+    "MODULATION",
+)
+
+ENV_OPTION_KEYS = (
+    "topology_preset",
+    "traffic_profile",
+    "mobility_model",
+    "speed_scale",
+    "interference_scale",
+    "coordination_capacity_scale",
+    "graph_mode",
+    "graph_missing_edge_prob",
+    "graph_false_edge_prob",
+    "graph_staleness_steps",
+    "obs_staleness_steps",
+    "handover_info_staleness_steps",
+    "obs_noise_std",
+    "failure_schedule",
+    "use_burst_history",
+    "offered_pps",
+)
+
+BOOLEAN_BASE_PARAMS = {
+    "RTS_CTS_ENABLED",
+    "ACK_ENABLED",
+    "ENABLE_FADING",
+}
+
+FLOAT_BASE_PARAMS = {
+    "SIM_TIME_S",
+    "AREA_X",
+    "AREA_Y",
+    "AREA_Z",
+    "V_MIN",
+    "V_MAX",
+    "V_MEAN",
+    "V_STD",
+    "SPEED_UPDATE_INTERVAL",
+    "GM_ALPHA",
+    "RWP_PAUSE_TIME",
+    "CIRC_RADIUS",
+    "CIRC_OMEGA_MEAN",
+    "CIRC_OMEGA_STD",
+    "CIRC_CLIMB_RATE",
+    "MOBILITY_DT",
+    "PHY_RATE_BPS",
+    "TDMA_GUARD_TIME_S",
+    "NAKAGAMI_M",
+    "NAKAGAMI_OMEGA",
+    "RICIAN_K",
+}
+
+INT_BASE_PARAMS = set(BASE_PARAM_KEYS) - FLOAT_BASE_PARAMS - BOOLEAN_BASE_PARAMS - {
+    "MOBILITY_MODEL",
+    "SPEED_MODE",
+    "FADING_MODEL",
+    "MODULATION",
+}
+
+FLOAT_ENV_OPTIONS = {
+    "speed_scale",
+    "interference_scale",
+    "coordination_capacity_scale",
+    "graph_missing_edge_prob",
+    "graph_false_edge_prob",
+    "obs_noise_std",
+}
+
+INT_ENV_OPTIONS = {
+    "offered_pps",
+    "graph_staleness_steps",
+    "obs_staleness_steps",
+    "handover_info_staleness_steps",
+}
+
+BOOLEAN_ENV_OPTIONS = {"use_burst_history"}
+
+MOBILITY_MODEL_OPTIONS = ["gauss_markov", "random_waypoint", "random_walk", "circular"]
+TRAFFIC_PROFILE_OPTIONS = ["smooth", "bursty_on_off", "heavy_tail"]
+GRAPH_MODE_OPTIONS = ["dynamic", "none", "static", "shuffled"]
+TOPOLOGY_PRESET_OPTIONS = ["default", "compact_dense", "sparse_separated", "asymmetric_hotspot"]
+FAILURE_TARGET_OPTIONS = ["random", "max_backlog", "max_degree"]
+
+DISPLAY_LABELS = {
+    "N": "Nodes",
+    "SEED": "Seed",
+    "AREA_X": "Area X",
+    "AREA_Y": "Area Y",
+    "AREA_Z": "Area Z",
+    "OFFERED_PPS": "Load pps",
+    "mobility_model": "Mobility",
+    "traffic_profile": "Traffic",
+    "topology_preset": "Topology",
+    "graph_mode": "Observed graph",
+    "graph_missing_edge_prob": "Missing-edge prob",
+    "graph_false_edge_prob": "False-edge prob",
+    "graph_staleness_steps": "Graph stale steps",
+    "obs_staleness_steps": "Obs stale steps",
+    "handover_info_staleness_steps": "Handover stale steps",
+    "obs_noise_std": "Obs noise",
+    "speed_scale": "Speed scale",
+    "interference_scale": "Interference scale",
+    "coordination_capacity_scale": "Coordination capacity",
+    "use_burst_history": "Burst history",
+    "failure_schedule": "Failure schedule",
+}
+
+GROUP_LABELS = {
+    "default": "Default",
+    "generalization": "Generalization",
+    "robustness": "Robustness",
+    "failure_recovery": "Failure/Recovery",
+}
+
+MODEL_PRIORITIES = {
+    "MAGAT-D3QN": 100,
+    "QMIX": 90,
+    "VDN": 85,
+    "IQL": 80,
+    "MCA-D3QN": 60,
+    "PPO": 40,
+    "A2C": 35,
+    "DQN": 30,
+}
+
+POLICY_FILES = {
+    "MAGAT-D3QN": {"filename": "unified_gnn_marl_model.pth", "model_type": "marl_gnn"},
+    "QMIX": {"filename": "unified_qmix_model.pth", "model_type": "marl"},
+    "VDN": {"filename": "unified_vdn_model.pth", "model_type": "marl"},
+    "IQL": {"filename": "unified_iql_model.pth", "model_type": "marl"},
+    "MCA-D3QN": {"filename": "unified_mca_d3qn_model.zip", "model_type": "sarl_custom"},
+    "PPO": {"filename": "unified_ppo_model.zip", "model_type": "sarl"},
+    "A2C": {"filename": "unified_a2c_model.zip", "model_type": "sarl"},
+    "DQN": {"filename": "unified_dqn_model.zip", "model_type": "sarl"},
+}
+
+FIXED_POLICY_DESCRIPTORS = (
+    {
+        "id": "fixed:all_tdma_mid",
+        "label": "All TDMA (mid rho)",
+        "model_type": "fixed",
+        "source": "fixed",
+        "priority": 1,
+        "available": True,
+        "compatible": True,
+        "compatibility_note": None,
+        "fixed_action": encode_action(0, len(VALID_RHO_LEVELS) // 2),
+        "fixed_mac_label": "TDMA",
+    },
+    {
+        "id": "fixed:all_csma_mid",
+        "label": "All CSMA (mid rho)",
+        "model_type": "fixed",
+        "source": "fixed",
+        "priority": 0,
+        "available": True,
+        "compatible": True,
+        "compatibility_note": None,
+        "fixed_action": encode_action(1, len(VALID_RHO_LEVELS) // 2),
+        "fixed_mac_label": "CSMA_CA",
+    },
+)
+
+
+def _ensure_max_steps_default() -> None:
+    if not hasattr(params, "MAX_STEPS_PER_EP"):
+        sim_time_s = float(getattr(params, "SIM_TIME_S", 10.0))
+        params.MAX_STEPS_PER_EP = max(1, int(np.ceil(sim_time_s / CC.BURST_TOTAL_TIME)))
+
+
+_ensure_max_steps_default()
+
+DEFAULT_BASE_PARAMS = {
+    key: copy.deepcopy(getattr(params, key))
+    for key in BASE_PARAM_KEYS
+    if hasattr(params, key)
 }
 
 
-class SimulationEngine:
-    """
-    Tick-based simulation engine combining 3D mobility + MAC protocol.
-    Each tick = MOBILITY_DT seconds.
-    Within each tick, MAC runs slots_per_tick MAC slots internally.
-    """
+def _scenario_id(group: str, name: str) -> str:
+    return f"{group}:{name}"
 
-    def __init__(self, config=None):
-        self.config = dict(DEFAULT_CONFIG)
-        if config:
-            self.config.update(config)
-        self.config_change_log = []
-        self._pending_changes = {}
+
+def _silent_log(_: str) -> None:
+    return None
+
+
+def _coerce_value(value: Any, *, as_bool: bool = False, as_int: bool = False, as_float: bool = False) -> Any:
+    if as_bool:
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+    if as_int:
+        return int(float(value))
+    if as_float:
+        return float(value)
+    return value
+
+
+def _slugify(text: str) -> str:
+    return "".join(ch.lower() if ch.isalnum() else "_" for ch in text).strip("_")
+
+
+def _display_label(key: str) -> str:
+    return DISPLAY_LABELS.get(key, key.replace("_", " ").title())
+
+
+def _compact_value_label(value: Any) -> str:
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    if isinstance(value, float):
+        text = f"{value:.4f}".rstrip("0").rstrip(".")
+        return text or "0"
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, separators=(",", ":"))
+    return str(value)
+
+
+def _safe_torch_load(path: str | os.PathLike[str]) -> Any:
+    import torch
+
+    try:
+        return torch.load(path, map_location="cpu", weights_only=True)
+    except TypeError:
+        return torch.load(path, map_location="cpu")
+
+
+def _state_tensor_shape(state: Any, key: str) -> tuple[int, ...] | None:
+    if not isinstance(state, dict):
+        return None
+    tensor = state.get(key)
+    if tensor is None or not hasattr(tensor, "shape"):
+        return None
+    return tuple(int(dim) for dim in tensor.shape)
+
+
+def _validate_marl_checkpoint(path: str | os.PathLike[str]) -> tuple[bool, str | None]:
+    try:
+        state = _safe_torch_load(path)
+    except Exception as exc:
+        return False, f"checkpoint could not be inspected: {exc}"
+
+    obs_shape = _state_tensor_shape(state, "net.0.weight")
+    action_shape = _state_tensor_shape(state, "net.4.weight")
+    if obs_shape is None or action_shape is None or len(obs_shape) < 2 or len(action_shape) < 2:
+        return False, "checkpoint layout does not match current MARL baseline loader"
+
+    trained_obs_dim = int(obs_shape[1])
+    trained_actions = int(action_shape[0])
+    expected_obs_dim = int(MARLConfig.OBS_DIM)
+    expected_actions = int(MARLConfig.NUM_ACTIONS)
+    if trained_obs_dim != expected_obs_dim or trained_actions != expected_actions:
+        return (
+            False,
+            f"trained for obs_dim={trained_obs_dim}, actions={trained_actions}; current env uses obs_dim={expected_obs_dim}, actions={expected_actions}",
+        )
+    return True, None
+
+
+def _validate_magat_checkpoint(path: str | os.PathLike[str]) -> tuple[bool, str | None]:
+    try:
+        state = _safe_torch_load(path)
+    except Exception as exc:
+        return False, f"checkpoint could not be inspected: {exc}"
+
+    obs_shape = _state_tensor_shape(state, "conv1.lin.weight")
+    action_shape = _state_tensor_shape(state, "advantage_stream.2.weight")
+    if obs_shape is None or action_shape is None or len(obs_shape) < 2 or len(action_shape) < 2:
+        return False, "checkpoint layout does not match current MAGAT loader"
+
+    trained_obs_dim = int(obs_shape[1])
+    trained_actions = int(action_shape[0])
+    expected_obs_dim = int(MARLConfig.OBS_DIM)
+    expected_actions = int(MARLConfig.NUM_ACTIONS)
+    if trained_obs_dim != expected_obs_dim or trained_actions != expected_actions:
+        return (
+            False,
+            f"trained for obs_dim={trained_obs_dim}, actions={trained_actions}; current env uses obs_dim={expected_obs_dim}, actions={expected_actions}",
+        )
+    return True, None
+
+
+def _validate_sb3_zip_checkpoint(path: str | os.PathLike[str]) -> tuple[bool, str | None]:
+    expected_obs_shape = (int(CC.C_MAX * CC.OBS_DIM_CLUSTER),)
+    expected_action_count = int(CC.NUM_ACTIONS)
+    expected_action_width = int(CC.C_MAX)
+
+    try:
+        with ZipFile(path) as archive:
+            payload = json.loads(archive.read("data"))
+    except Exception as exc:
+        return False, f"checkpoint archive could not be inspected: {exc}"
+
+    observation_space = payload.get("observation_space", {})
+    action_space = payload.get("action_space", {})
+    obs_spaces = str(observation_space.get("spaces", ""))
+    action_type = str(action_space.get(":type:", ""))
+    action_n = str(action_space.get("n", ""))
+
+    if "Discrete" in action_type:
+        action_name = action_type.split("'")[-2] if "'" in action_type else action_type.rsplit(".", 1)[-1]
+        return (
+            False,
+            f"trained for {action_name} with n={action_n}; current UI SARL session uses MultiDiscrete({expected_action_width} x {expected_action_count}) and obs {expected_obs_shape}",
+        )
+
+    expected_obs_text = str(expected_obs_shape[0])
+    if expected_obs_text not in obs_spaces and expected_obs_text not in json.dumps(observation_space):
+        return (
+            False,
+            f"trained for observation layout {obs_spaces or observation_space}; current UI SARL session uses flattened obs {expected_obs_shape}",
+        )
+
+    return True, None
+
+
+def _validate_checkpoint_compatibility(label: str, meta: dict[str, Any], path: Path) -> tuple[bool, bool, str | None]:
+    if meta["model_type"] == "marl_gnn":
+        compatible, note = _validate_magat_checkpoint(path)
+        return compatible, compatible, note
+    if meta["model_type"] == "marl":
+        compatible, note = _validate_marl_checkpoint(path)
+        return compatible, compatible, note
+    if meta["model_type"] == "sarl":
+        compatible, note = _validate_sb3_zip_checkpoint(path)
+        return compatible, compatible, note
+    if meta["model_type"] == "sarl_custom":
+        return False, False, "custom MCA-D3QN checkpoints are not loadable by the current UI loader"
+    return True, True, None
+
+
+def _build_base_param_schema() -> list[dict[str, Any]]:
+    return [
+        {"key": "N", "label": "Nodes", "type": "number", "min": 1, "step": 1},
+        {"key": "SEED", "label": "Seed", "type": "number", "min": 0, "step": 1},
+        {"key": "AREA_X", "label": "Area X", "type": "number", "min": 10, "step": 10},
+        {"key": "AREA_Y", "label": "Area Y", "type": "number", "min": 10, "step": 10},
+        {"key": "AREA_Z", "label": "Area Z", "type": "number", "min": 10, "step": 5},
+        {"key": "OFFERED_PPS", "label": "Load pps", "type": "number", "min": 1, "step": 10},
+    ]
+
+
+def _build_env_option_schema() -> list[dict[str, Any]]:
+    return [
+        {
+            "key": "mobility_model",
+            "label": "Mobility override",
+            "type": "select",
+            "section": "Mobility",
+            "options": MOBILITY_MODEL_OPTIONS,
+        },
+        {
+            "key": "speed_scale",
+            "label": "Speed scale",
+            "type": "number",
+            "section": "Mobility",
+            "min": 0.2,
+            "max": 3.0,
+            "step": 0.1,
+        },
+        {
+            "key": "traffic_profile",
+            "label": "Traffic profile",
+            "type": "select",
+            "section": "Traffic",
+            "options": TRAFFIC_PROFILE_OPTIONS,
+        },
+        {
+            "key": "topology_preset",
+            "label": "Topology preset",
+            "type": "select",
+            "section": "Topology",
+            "options": TOPOLOGY_PRESET_OPTIONS,
+        },
+        {
+            "key": "graph_mode",
+            "label": "Observed graph mode",
+            "type": "select",
+            "section": "Graph / Obs",
+            "options": GRAPH_MODE_OPTIONS,
+        },
+        {
+            "key": "graph_missing_edge_prob",
+            "label": "Missing-edge prob",
+            "type": "number",
+            "section": "Graph / Obs",
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.01,
+        },
+        {
+            "key": "graph_false_edge_prob",
+            "label": "False-edge prob",
+            "type": "number",
+            "section": "Graph / Obs",
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.01,
+        },
+        {
+            "key": "graph_staleness_steps",
+            "label": "Graph stale steps",
+            "type": "number",
+            "section": "Graph / Obs",
+            "min": 0,
+            "step": 1,
+        },
+        {
+            "key": "obs_staleness_steps",
+            "label": "Obs stale steps",
+            "type": "number",
+            "section": "Graph / Obs",
+            "min": 0,
+            "step": 1,
+        },
+        {
+            "key": "handover_info_staleness_steps",
+            "label": "Handover stale steps",
+            "type": "number",
+            "section": "Graph / Obs",
+            "min": 0,
+            "step": 1,
+        },
+        {
+            "key": "obs_noise_std",
+            "label": "Obs noise std",
+            "type": "number",
+            "section": "Graph / Obs",
+            "min": 0.0,
+            "step": 0.01,
+        },
+        {
+            "key": "interference_scale",
+            "label": "Interference scale",
+            "type": "number",
+            "section": "Coordination",
+            "min": 0.1,
+            "max": 3.0,
+            "step": 0.05,
+        },
+        {
+            "key": "coordination_capacity_scale",
+            "label": "Coordination capacity scale",
+            "type": "number",
+            "section": "Coordination",
+            "min": 0.1,
+            "max": 3.0,
+            "step": 0.05,
+        },
+        {
+            "key": "use_burst_history",
+            "label": "Use burst history",
+            "type": "boolean",
+            "section": "Coordination",
+        },
+        {
+            "key": "failure_schedule",
+            "label": "Failure schedule",
+            "type": "json",
+            "section": "Failure",
+            "placeholder": '[{"step":20,"target":"random"}]',
+        },
+    ]
+
+
+def build_preset_registry(base_nodes: int) -> list[dict[str, Any]]:
+    from experiments.run_failure_recovery_suite import build_scenarios as build_failure_scenarios
+    from experiments.run_generalization_suite import build_scenarios as build_generalization_scenarios
+    from experiments.run_robustness_suite import build_scenarios as build_robustness_scenarios
+
+    presets: list[dict[str, Any]] = [
+        {
+            "id": _scenario_id("default", "base"),
+            "group": "default",
+            "group_label": GROUP_LABELS["default"],
+            "study_block": "base",
+            "name": "base",
+            "label": "Base environment",
+            "description": "Default decentralized cluster-head environment.",
+            "param_overrides": {},
+            "env_options": {},
+        }
+    ]
+
+    for scenario in build_generalization_scenarios(base_nodes):
+        presets.append(
+            {
+                "id": _scenario_id("generalization", scenario["scenario"]),
+                "group": "generalization",
+                "group_label": GROUP_LABELS["generalization"],
+                "study_block": scenario["study_block"],
+                "name": scenario["scenario"],
+                "label": scenario["scenario"].replace("_", " "),
+                "description": f"{scenario['study_block']} preset",
+                "param_overrides": copy.deepcopy(scenario["param_overrides"]),
+                "env_options": copy.deepcopy(scenario["env_options"]),
+            }
+        )
+
+    for scenario in build_robustness_scenarios():
+        presets.append(
+            {
+                "id": _scenario_id("robustness", scenario["scenario"]),
+                "group": "robustness",
+                "group_label": GROUP_LABELS["robustness"],
+                "study_block": scenario["study_block"],
+                "name": scenario["scenario"],
+                "label": scenario["scenario"].replace("_", " "),
+                "description": f"{scenario['study_block']} preset",
+                "param_overrides": {},
+                "env_options": copy.deepcopy(scenario["env_options"]),
+            }
+        )
+
+    for scenario in build_failure_scenarios(max_steps=100):
+        presets.append(
+            {
+                "id": _scenario_id("failure_recovery", scenario["scenario"]),
+                "group": "failure_recovery",
+                "group_label": GROUP_LABELS["failure_recovery"],
+                "study_block": scenario["study_block"],
+                "name": scenario["scenario"],
+                "label": scenario["scenario"].replace("_", " "),
+                "description": f"{scenario['study_block']} preset",
+                "param_overrides": {},
+                "env_options": copy.deepcopy(scenario["env_options"]),
+            }
+        )
+
+    return presets
+
+
+def discover_policy_descriptors(results_root: str | os.PathLike[str]) -> list[dict[str, Any]]:
+    root = Path(results_root)
+    latest: dict[str, tuple[float, Path]] = {}
+    descriptors = [copy.deepcopy(item) for item in FIXED_POLICY_DESCRIPTORS]
+
+    if root.exists():
+        for label, meta in POLICY_FILES.items():
+            for path in root.rglob(meta["filename"]):
+                mtime = path.stat().st_mtime
+                current = latest.get(label)
+                if current is None or mtime > current[0]:
+                    latest[label] = (mtime, path)
+
+    for label, (_, path) in latest.items():
+        meta = POLICY_FILES[label]
+        available, compatible, note = _validate_checkpoint_compatibility(label, meta, path)
+        descriptors.append(
+            {
+                "id": f"checkpoint:{_slugify(label)}",
+                "label": label,
+                "model_type": meta["model_type"],
+                "source": "checkpoint",
+                "priority": MODEL_PRIORITIES.get(label, 10),
+                "available": available,
+                "compatible": compatible,
+                "compatibility_note": note,
+                "checkpoint_dir": str(path.parent),
+                "checkpoint_file": str(path),
+                "checkpoint_mtime": dt.datetime.fromtimestamp(path.stat().st_mtime).isoformat(),
+            }
+        )
+
+    descriptors.sort(key=lambda item: (-item["priority"], item["label"]))
+    return descriptors
+
+
+def choose_default_policy_id(
+    descriptors: list[dict[str, Any]],
+    *,
+    exclude_ids: set[str] | None = None,
+) -> str:
+    excluded = set(exclude_ids or ())
+    checkpoints = [
+        item
+        for item in descriptors
+        if item["source"] == "checkpoint"
+        and item["id"] not in excluded
+        and item.get("available", True)
+        and item.get("compatible", True)
+    ]
+    available = {item["label"]: item["id"] for item in checkpoints}
+    if "MAGAT-D3QN" in available:
+        return available["MAGAT-D3QN"]
+    for label in ("QMIX", "VDN", "IQL"):
+        if label in available:
+            return available[label]
+    if "fixed:all_tdma_mid" not in excluded:
+        return "fixed:all_tdma_mid"
+    for descriptor in descriptors:
+        if descriptor["id"] not in excluded:
+            return descriptor["id"]
+    raise ValueError("No policies are available")
+
+
+class SimulationEngine:
+    """Public façade used by the websocket server and tests."""
+
+    def __init__(self, config: dict[str, Any] | None = None):
+        self.base_params = copy.deepcopy(DEFAULT_BASE_PARAMS)
+        self.env_reset_options: dict[str, Any] = {}
+        self.runtime = {
+            "policy_id": None,
+            "deterministic": True,
+            "speed_factor": 1.0,
+        }
+        self.runtime_status = {
+            "policy_warning": None,
+        }
+        self.config_change_log: list[dict[str, Any]] = []
+        self.results_root = os.path.join(project_root, getattr(params, "RESULTS_ROOT", "results"))
+
+        self._preset_registry = build_preset_registry(int(self.base_params.get("N", getattr(params, "N", 50))))
+        self._preset_map = {item["id"]: item for item in self._preset_registry}
+        self.selected_preset_id = _scenario_id("default", "base")
+
+        self._policy_registry = discover_policy_descriptors(self.results_root)
+        self._policy_map = {item["id"]: item for item in self._policy_registry}
+        self.runtime["policy_id"] = choose_default_policy_id(self._policy_registry)
+
+        self._policy_cache: dict[str, tuple[str, Any]] = {}
+        self._session_kind = "marl"
+        self._session_obs: Any = None
+        self._session_done = False
+        self.sarl_env: SARLCentralEnv | None = None
+        self.marl_env: MARLMacEnv | None = None
+        self.last_infos: dict[str, Any] = {}
+        self.last_snapshot: dict[str, Any] | None = None
+        self.tick_count = 0
+        self.sim_time = 0.0
+        self.history: list[dict[str, Any]] = []
+        self.cluster_step_history: list[dict[str, Any]] = []
+        self.graph_edge_history: list[dict[str, Any]] = []
+        self.membership_history: list[dict[str, Any]] = []
+        self._prev_summary_counts = {"splits": 0, "merges": 0, "reassociations": 0, "handovers": 0, "failure_events": 0}
+        self._prev_leader_map: dict[int, int] = {}
+
+        self._apply_config_overrides(config or {})
+        self._rebuild_preset_registry_if_needed()
         self.reset()
 
-    # ------------------------------------------------------------------
-    # Reset
-    # ------------------------------------------------------------------
-    def reset(self):
-        """Re-initialize all state from current config."""
-        c = self.config
-        self.sim_time = 0.0
-        self.tick_count = 0
+    def _apply_config_overrides(self, config: dict[str, Any]) -> None:
+        if not config:
+            return
 
-        N = int(c["N"])
-        self.N = N
-        dt = float(c["MOBILITY_DT"])
-        self.dt = dt
-        seed = int(c["SEED"])
-        self.rng = np.random.default_rng(seed)
+        nested_base = config.get("base_params", {})
+        nested_env = config.get("env_reset_options", {})
+        nested_runtime = config.get("runtime", {})
 
-        # --- Mobility ---
-        bounds = (c["AREA_X"], c["AREA_Y"], c["AREA_Z"])
-        self.bounds = bounds
-        self.sink_pos = np.array([c["SINK_X"], c["SINK_Y"], c["SINK_Z"]], dtype=float)
-        self.comm_range = float(c["COMM_RANGE_R"])
+        self.base_params.update(copy.deepcopy(nested_base))
+        self.env_reset_options.update(copy.deepcopy(nested_env))
+        self.runtime.update(copy.deepcopy(nested_runtime))
 
-        self.speed_engine = SpeedEngine(
-            n_nodes=N, v_min=c["V_MIN"], v_max=c["V_MAX"],
-            mode=c["SPEED_MODE"], v_mean=c["V_MEAN"], v_std=c["V_STD"],
-            update_interval=c["SPEED_UPDATE_INTERVAL"],
-            rng=self.rng,
-        )
-        self.mobility_model = create_mobility_model(
-            name=c["MOBILITY_MODEL"], n_nodes=N, bounds=bounds,
-            speed_engine=self.speed_engine, rng=self.rng,
-            gm_alpha=c["GM_ALPHA"], rwp_pause_time=c["RWP_PAUSE_TIME"],
-            circ_radius=c["CIRC_RADIUS"], circ_omega_mean=c["CIRC_OMEGA_MEAN"],
-            circ_omega_std=c["CIRC_OMEGA_STD"], circ_climb_rate=c["CIRC_CLIMB_RATE"],
-        )
+        for key, value in config.items():
+            if key in {"base_params", "env_reset_options", "runtime"}:
+                continue
+            if key in BASE_PARAM_KEYS:
+                self.base_params[key] = copy.deepcopy(value)
+            elif key in ENV_OPTION_KEYS:
+                self.env_reset_options[key] = copy.deepcopy(value)
+            elif key in {"policy_id", "deterministic", "speed_factor"}:
+                self.runtime[key] = copy.deepcopy(value)
 
-        # Current state
-        self.positions = self.mobility_model.positions.copy()
-        self.velocities = self.mobility_model.velocities.copy()
-        
-        from configs import config as params
-        if getattr(params, 'DECENTRALIZED_COMM', False):
-            diff = self.positions[:, np.newaxis, :] - self.positions[np.newaxis, :, :]
-            dist_sq = np.sum(diff ** 2, axis=-1)
-            np.fill_diagonal(dist_sq, np.inf)
-            self.distances = np.sqrt(np.min(dist_sq, axis=1))
+        if self.runtime.get("policy_id") not in self._policy_map:
+            self.runtime["policy_id"] = choose_default_policy_id(self._policy_registry)
+        if self.selected_preset_id not in self._preset_map:
+            self.selected_preset_id = _scenario_id("default", "base")
+
+    def _rebuild_preset_registry_if_needed(self) -> None:
+        base_nodes = int(self.base_params.get("N", getattr(params, "N", 50)))
+        current = self.selected_preset_id
+        self._preset_registry = build_preset_registry(base_nodes)
+        self._preset_map = {item["id"]: item for item in self._preset_registry}
+        if current in self._preset_map:
+            self.selected_preset_id = current
         else:
-            self.distances = compute_distances(self.positions, self.sink_pos)
-        self.link_up = compute_link_up(self.distances, self.comm_range)
+            self.selected_preset_id = _scenario_id("default", "base")
 
-        # --- MAC state ---
-        slot_time_s = float(c["SLOT_TIME_S"])
-        phy_rate_bps = float(c["PHY_RATE_BPS"])
-        payload_bytes = int(c["PAYLOAD_BYTES"])
-        payload_bits = payload_bytes * 8
-        tx_time_s = payload_bits / phy_rate_bps
-        TX_slots = int(math.ceil(tx_time_s / slot_time_s))
+    def _current_preset(self) -> dict[str, Any]:
+        return self._preset_map.get(self.selected_preset_id, self._preset_map[_scenario_id("default", "base")])
 
-        self.slot_time_s = slot_time_s
-        self.payload_bits = payload_bits
-        self.TX_slots = TX_slots
-        self.QMAX = int(c["QMAX"])
+    def _current_policy_descriptor(self) -> dict[str, Any]:
+        policy_id = str(self.runtime.get("policy_id") or choose_default_policy_id(self._policy_registry))
+        descriptor = self._policy_map.get(policy_id)
+        if descriptor is None or not descriptor.get("available", True) or not descriptor.get("compatible", True):
+            policy_id = choose_default_policy_id(self._policy_registry)
+            descriptor = self._policy_map[policy_id]
+            self.runtime["policy_id"] = policy_id
+        return descriptor
 
-        # Slots per mobility tick
-        self.slots_per_tick = max(1, int(round(dt / slot_time_s)))
+    def _mark_policy_unavailable(self, policy_id: str, reason: str) -> None:
+        descriptor = self._policy_map.get(policy_id)
+        if descriptor is None:
+            return
+        descriptor["available"] = False
+        descriptor["compatible"] = False
+        descriptor["compatibility_note"] = reason
 
-        # TDMA
-        guard_slots = int(math.ceil(float(c["TDMA_GUARD_TIME_S"]) / slot_time_s))
-        self.tdma_slot_total = TX_slots + guard_slots
+    def _set_policy_warning(self, message: str | None) -> None:
+        self.runtime_status["policy_warning"] = message
 
-        # CSMA/CA durations
-        rts_cts = bool(c["RTS_CTS_ENABLED"])
-        ack_en = bool(c["ACK_ENABLED"])
-        sifs = int(c["SIFS_SLOTS"])
-        if rts_cts and ack_en:
-            self.busy_success = int(c["RTS_SLOTS"]) + sifs + int(c["CTS_SLOTS"]) + sifs + TX_slots + sifs + int(c["ACK_SLOTS"])
-            self.busy_collision = int(c["RTS_SLOTS"]) + int(c["ACK_TIMEOUT_SLOTS"])
-        elif ack_en:
-            self.busy_success = TX_slots + sifs + int(c["ACK_SLOTS"])
-            self.busy_collision = TX_slots + int(c["ACK_TIMEOUT_SLOTS"])
+    def _normalize_failure_schedule(self, value: Any) -> list[dict[str, Any]]:
+        if value in (None, ""):
+            return []
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return []
+            value = json.loads(stripped)
+        if not isinstance(value, list):
+            raise ValueError("failure_schedule must be a JSON list of event objects")
+
+        normalized = []
+        for idx, event in enumerate(value):
+            if not isinstance(event, dict):
+                raise ValueError(f"failure_schedule[{idx}] must be an object")
+            if "step" not in event:
+                raise ValueError(f"failure_schedule[{idx}] is missing 'step'")
+            normalized_event = dict(event)
+            normalized_event["step"] = int(normalized_event["step"])
+            if "cluster_id" in normalized_event:
+                normalized_event["cluster_id"] = int(normalized_event["cluster_id"])
+            normalized.append(normalized_event)
+        return normalized
+
+    def _context_item(self, *, key: str, value: Any, source: str) -> list[dict[str, Any]]:
+        label = _display_label(key)
+        if key == "failure_schedule":
+            rows = []
+            for idx, event in enumerate(value or []):
+                if not isinstance(event, dict):
+                    continue
+                if "cluster_id" in event:
+                    value_label = f"step {int(event.get('step', 0))} cluster={int(event['cluster_id'])}"
+                else:
+                    value_label = f"step {int(event.get('step', 0))} target={event.get('target', 'random')}"
+                rows.append(
+                    {
+                        "key": f"{key}_{idx}",
+                        "base_key": key,
+                        "label": label,
+                        "value": copy.deepcopy(event),
+                        "value_label": value_label,
+                        "source": source,
+                    }
+                )
+            return rows or [{"key": key, "base_key": key, "label": label, "value": [], "value_label": "none", "source": source}]
+
+        return [
+            {
+                "key": key,
+                "base_key": key,
+                "label": label,
+                "value": copy.deepcopy(value),
+                "value_label": _compact_value_label(value),
+                "source": source,
+            }
+        ]
+
+    def _build_scenario_context(self) -> dict[str, Any]:
+        preset = self._current_preset()
+        items: list[dict[str, Any]] = []
+
+        for key, value in preset.get("param_overrides", {}).items():
+            items.extend(self._context_item(key=key, value=value, source="preset"))
+        for key, value in preset.get("env_options", {}).items():
+            items.extend(self._context_item(key=key, value=value, source="preset"))
+        for key, value in self.env_reset_options.items():
+            items.extend(self._context_item(key=key, value=value, source="manual"))
+
+        summary_lines = [f"{item['source']}: {item['label']} = {item['value_label']}" for item in items]
+        impairment_keys = {
+            "graph_mode",
+            "graph_missing_edge_prob",
+            "graph_false_edge_prob",
+            "graph_staleness_steps",
+            "obs_staleness_steps",
+            "handover_info_staleness_steps",
+            "obs_noise_std",
+            "failure_schedule",
+            "interference_scale",
+            "coordination_capacity_scale",
+        }
+        impairment_lines = [
+            f"{item['label']} = {item['value_label']}"
+            for item in items
+            if item.get("base_key") == "failure_schedule" or item.get("base_key") in impairment_keys
+        ]
+        if not summary_lines:
+            summary_lines = ["Base environment"]
+        if not impairment_lines:
+            impairment_lines = ["No active impairments"]
+
+        return {
+            "context_items": items,
+            "summary_lines": summary_lines,
+            "impairment_lines": impairment_lines,
+        }
+
+    def _build_graph_stats(
+        self,
+        *,
+        true_edges: list[dict[str, int]],
+        observed_edges: list[dict[str, int]],
+        cluster_count: int,
+    ) -> dict[str, Any]:
+        pair_capacity = max(cluster_count * (cluster_count - 1) / 2.0, 1.0)
+        true_pairs = {tuple(sorted((edge["source"], edge["target"]))) for edge in true_edges}
+        observed_pairs = {tuple(sorted((edge["source"], edge["target"]))) for edge in observed_edges}
+        return {
+            "true_edge_count": len(true_pairs),
+            "observed_edge_count": len(observed_pairs),
+            "missing_edge_count": len(true_pairs - observed_pairs),
+            "false_edge_count": len(observed_pairs - true_pairs),
+            "true_density": round(len(true_pairs) / pair_capacity, 4),
+            "observed_density": round(len(observed_pairs) / pair_capacity, 4),
+            "graph_mode": self._effective_env_options().get("graph_mode", "dynamic"),
+            "graph_missing_edge_prob": float(self._effective_env_options().get("graph_missing_edge_prob", 0.0)),
+            "graph_false_edge_prob": float(self._effective_env_options().get("graph_false_edge_prob", 0.0)),
+            "graph_staleness_steps": int(self._effective_env_options().get("graph_staleness_steps", 0)),
+            "obs_staleness_steps": int(self._effective_env_options().get("obs_staleness_steps", 0)),
+            "handover_info_staleness_steps": int(self._effective_env_options().get("handover_info_staleness_steps", 0)),
+        }
+
+    def _effective_base_params(self) -> dict[str, Any]:
+        effective = copy.deepcopy(self.base_params)
+        effective.update(copy.deepcopy(self._current_preset().get("param_overrides", {})))
+        if "SIM_TIME_S" not in effective:
+            effective["SIM_TIME_S"] = float(getattr(params, "SIM_TIME_S", 10.0))
+        return effective
+
+    def _effective_env_options(self) -> dict[str, Any]:
+        effective = copy.deepcopy(self._current_preset().get("env_options", {}))
+        effective.update(copy.deepcopy(self.env_reset_options))
+        return effective
+
+    def _apply_effective_params_to_globals(self) -> None:
+        effective = self._effective_base_params()
+        for key, value in effective.items():
+            setattr(params, key, value)
+
+        if "MAX_STEPS_PER_EP" in effective:
+            params.MAX_STEPS_PER_EP = int(effective["MAX_STEPS_PER_EP"])
         else:
-            self.busy_success = TX_slots
-            self.busy_collision = TX_slots
+            sim_time_s = float(effective.get("SIM_TIME_S", getattr(params, "SIM_TIME_S", 10.0)))
+            params.MAX_STEPS_PER_EP = max(1, int(np.ceil(sim_time_s / CC.BURST_TOTAL_TIME)))
 
-        # Per-node state
-        self.queues = [[] for _ in range(N)]  # arrival timestamps
-        self.q_lens = np.zeros(N, dtype=int)
+    def _session_kind_for_policy(self, descriptor: dict[str, Any]) -> str:
+        if descriptor["model_type"] in {"sarl", "sarl_custom"}:
+            return "sarl"
+        return "marl"
 
-        # CSMA state
-        self.cw = np.full(N, int(c["CW_MIN"]), dtype=int)
-        self.backoff = np.full(N, -1, dtype=int)
-        self.retry = np.zeros(N, dtype=int)
-        self.channel_busy = 0
-        self.idle_since = 0
-        self.global_slot = 0
-
-        # Traffic arrivals
-        lam_node = float(c["OFFERED_PPS"]) / max(N, 1)
-        self.lam_node = max(lam_node, 1e-12)
-        self.next_arrival = self.rng.exponential(1.0 / self.lam_node, size=N)
-
-        # --- Metrics (cumulative & windowed) ---
-        self._reset_metrics()
-
-        # --- RL agent ---
-        self.rl_agent = None
-        self.rl_selections = []  # [{tick, traffic_pps, mac_selected, q_tdma, q_csma, reward}]
-        self._rl_window_metrics = {"TDMA": {"bits": 0, "delay": 0.0, "count": 0},
-                                   "CSMA_CA": {"bits": 0, "delay": 0.0, "count": 0}}
-        if bool(c.get("ENABLE_RL_SELECTOR", False)):
-            self.rl_agent = QLearningAgent(
-                alpha=float(c.get("RL_ALPHA", 0.1)),
-                gamma=float(c.get("RL_GAMMA", 0.0)),
-                epsilon=float(c.get("RL_EPSILON", 0.0)),
-                n_bins=int(c.get("RL_TRAFFIC_BINS", 14)),
-            )
-
-        # --- Config snapshot ---
-        self._write_config_snapshot()
-
-        # --- History for export ---
-        self.history = []
-        
-        # --- MARL state ---
-        self.marl_model = None
-        self.marl_decisions = {}  # per-tick: {agent_id: action}
-        if bool(c.get("ENABLE_MARL", False)):
-            self._load_marl_model()
-
-    def _reset_metrics(self):
-        self.total_pkts_success = 0
-        self.total_bits_tx = 0
-        self.total_pkts_dropped = 0
-        self.total_collisions = 0
-        self.total_delay_sum = 0.0
-        self.total_delay_count = 0
-        self.total_channel_busy_slots = 0
-        self.total_slots_run = 0
-        # Per-tick window
-        self.tick_pkts_success = 0
-        self.tick_bits_tx = 0
-        self.tick_pkts_dropped = 0
-        self.tick_collisions = 0
-        self.tick_delay_sum = 0.0
-        self.tick_delay_count = 0
-
-    def _reset_tick_metrics(self):
-        self.tick_pkts_success = 0
-        self.tick_bits_tx = 0
-        self.tick_pkts_dropped = 0
-        self.tick_collisions = 0
-        self.tick_delay_sum = 0.0
-        self.tick_delay_count = 0
-
-    # ------------------------------------------------------------------
-    # Config management
-    # ------------------------------------------------------------------
-    def update_config(self, key, value, mode="live"):
-        """Update a config parameter. mode='live' or 'restart'."""
-        old = self.config.get(key)
-        self.config[key] = value
+    def _log_change(self, *, target: str, key: str, old_value: Any, new_value: Any, mode: str = "reset") -> dict[str, Any]:
         entry = {
-            "timestamp": self.sim_time, "tick": self.tick_count,
-            "param": key, "old_value": old, "new_value": value,
+            "timestamp": round(self.sim_time, 4),
+            "tick": self.tick_count,
+            "target": target,
+            "param": key,
+            "old_value": old_value,
+            "new_value": new_value,
             "apply_mode": mode,
         }
         self.config_change_log.append(entry)
-
-        if mode == "live":
-            # Apply immediately for parameters that can change live
-            self._apply_live_change(key, value)
-        else:
-            self._pending_changes[key] = value
         return entry
 
-    def _apply_live_change(self, key, value):
-        """Apply a parameter change at the next tick boundary."""
-        if key == "OFFERED_PPS":
-            self.lam_node = max(float(value) / max(self.N, 1), 1e-12)
-        elif key == "COMM_RANGE_R":
-            self.comm_range = float(value)
-        elif key in ("SINK_X", "SINK_Y", "SINK_Z"):
-            idx = {"SINK_X": 0, "SINK_Y": 1, "SINK_Z": 2}[key]
-            self.sink_pos[idx] = float(value)
-        elif key == "QMAX":
-            self.QMAX = int(value)
-        elif key in ("CW_MIN", "CW_MAX", "MAX_RETRY"):
-            pass  # These are read each tick from self.config
-
-    def apply_pending_changes(self):
-        """Apply all queued restart-mode changes and reset."""
-        if self._pending_changes:
-            self._pending_changes.clear()
-            self.reset()
-
-    def get_config(self):
-        return dict(self.config)
-
-    # ------------------------------------------------------------------
-    # Tick — one mobility step + MAC slots
-    # ------------------------------------------------------------------
-    def tick(self):
-        """Advance simulation by one MOBILITY_DT step. Returns snapshot dict."""
-        self._reset_tick_metrics()
-        c = self.config
-
-        # 1) Mobility update
-        if self.tick_count == 0:
-            self.positions = self.mobility_model.positions.copy()
-            self.velocities = self.mobility_model.velocities.copy()
-        else:
-            self.positions, self.velocities = self.mobility_model.update(self.dt)
-
-        from configs import config as params
-        if getattr(params, 'DECENTRALIZED_COMM', False):
-            diff = self.positions[:, np.newaxis, :] - self.positions[np.newaxis, :, :]
-            dist_sq = np.sum(diff ** 2, axis=-1)
-            np.fill_diagonal(dist_sq, np.inf)
-            self.distances = np.sqrt(np.min(dist_sq, axis=1))
-        else:
-            self.distances = compute_distances(self.positions, self.sink_pos)
-        self.link_up = compute_link_up(self.distances, self.comm_range)
-
-        # 2) RL MAC selection (if enabled)
-        protocol = str(c["MAC_PROTOCOL"]).upper()
-        if self.rl_agent is not None:
-            interval = int(c.get("RL_DECISION_INTERVAL", 10))
-            if self.tick_count % interval == 0 and self.tick_count > 0:
-                protocol = self._rl_select_mac()
-                self.config["MAC_PROTOCOL"] = protocol
-
-        # 3) Run MAC slots
-        if protocol == "TDMA":
-            self._run_tdma_slots()
-        else:
-            self._run_csma_slots()
-
-        # 4) Compute snapshot
-        snapshot = self._build_snapshot()
-
-        # 5) Record history
-        self.history.append({
-            "t": self.sim_time,
-            "positions": self.positions.copy(),
-            "velocities": self.velocities.copy(),
-            "distances": self.distances.copy(),
-            "link_up": self.link_up.copy(),
-            "q_lens": self.q_lens.copy(),
-            "metrics": snapshot["metrics"],
-        })
-
-        self.sim_time += self.dt
-        self.tick_count += 1
-        return snapshot
-
-    def _load_marl_model(self):
-        """Try to load a MARL GNN model for per-agent MAC decisions."""
-        try:
-            import torch
-            from algorithms.rl.gnn_marl import MAGAT_D3QN_QNetwork
-            from configs.marl_config import MARLConfig
-            # Prefer unified checkpoints, fallback to legacy path
-            cp_unified = os.path.join(project_root, "results", "checkpoints_unified", "unified_gnn_marl_model.pth")
-            cp_legacy = os.path.join(project_root, "results", "checkpoints", "gnn_marl_model.pth")
-            cp_path = cp_unified if os.path.exists(cp_unified) else cp_legacy
-            if os.path.exists(cp_path):
-                device = torch.device("cpu")
-                obs_dim = MARLConfig.OBS_DIM
-                self.marl_model = MAGAT_D3QN_QNetwork(
-                    node_in_dim=obs_dim, hidden_dim=MARLConfig.HIDDEN_DIM,
-                    num_actions=MARLConfig.NUM_ACTIONS, heads=MARLConfig.GNN_HEADS
-                ).to(device)
-                self.marl_model.load_state_dict(torch.load(cp_path, map_location=device))
-                self.marl_model.eval()
-                print(f"  MARL model loaded from: {cp_path}")
-        except Exception as e:
-            print(f"Warning: MARL model load failed: {e}")
-            self.marl_model = None
-
-    # ------------------------------------------------------------------
-    # RL MAC selection
-    # ------------------------------------------------------------------
-    def _rl_select_mac(self):
-        """Use RL agent to select TDMA or CSMA_CA based on recent metrics."""
-        c = self.config
-        wT = float(c.get("RL_WT", 0.5))
-        wD = float(c.get("RL_WD", 0.5))
-        traffic_pps = float(c.get("OFFERED_PPS", 200))
-        state = self.rl_agent.get_state(traffic_pps, 10, 1000)
-
-        # Compute reward from current tick metrics
-        elapsed = max(self.dt, 1e-12)
-        thr_mbps = self.tick_bits_tx / elapsed / 1e6
-        delay_ms = (self.tick_delay_sum / max(self.tick_delay_count, 1)) * 1000
-
-        # Normalize
-        max_thr = float(c.get("PHY_RATE_BPS", 5e6)) / 1e6
-        max_delay = 100.0  # ms cap for normalization
-        r_thr = min(thr_mbps / max(max_thr, 1e-9), 1.0)
-        r_delay = max(1.0 - delay_ms / max_delay, 0.0)
-        reward = wT * r_thr + wD * r_delay
-
-        # Current protocol's action index
-        current_mac = str(c.get("MAC_PROTOCOL", "CSMA_CA")).upper()
-        current_action = 0 if current_mac == "TDMA" else 1
-
-        # Update Q for current action
-        self.rl_agent.update(state, current_action, reward, state)
-
-        # Select next action
-        action = self.rl_agent.select_action(state)
-        selected = "TDMA" if action == 0 else "CSMA_CA"
-
-        q_vals = self.rl_agent.get_q_values(state)
-        self.rl_selections.append({
-            "tick": self.tick_count,
-            "sim_time": round(self.sim_time, 4),
-            "traffic_pps": traffic_pps,
-            "state": state,
-            "mac_selected": selected,
-            "q_tdma": round(q_vals[0], 6),
-            "q_csma": round(q_vals[1], 6),
-            "reward": round(reward, 6),
-            "throughput_mbps": round(thr_mbps, 4),
-            "delay_ms": round(delay_ms, 4),
-        })
-        return selected
-
-    def _write_config_snapshot(self):
-        """Write immutable config snapshot at run start."""
-        try:
-            snap_dir = os.path.join(project_root, "results", "_config_snapshots")
-            os.makedirs(snap_dir, exist_ok=True)
-            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            snap_path = os.path.join(snap_dir, f"config_snapshot_{ts}.json")
-            with open(snap_path, "w") as f:
-                json.dump(self.config, f, indent=2, default=str)
-        except Exception:
-            pass  # non-critical
-
-    # ------------------------------------------------------------------
-    # MAC: TDMA (tick-scoped)
-    # ------------------------------------------------------------------
-    def _run_tdma_slots(self):
-        N = self.N
-        for s_offset in range(self.slots_per_tick):
-            s = self.global_slot
-            t = s * self.slot_time_s
-
-            # Arrivals
-            arriving = np.where(t >= self.next_arrival)[0]
-            for i in arriving:
-                if self.link_up[i]:
-                    if len(self.queues[i]) < self.QMAX:
-                        self.queues[i].append(t)
-                        self.q_lens[i] += 1
-                    else:
-                        self.tick_pkts_dropped += 1
-                        self.total_pkts_dropped += 1
-                self.next_arrival[i] += self.rng.exponential(1.0 / self.lam_node)
-
-            # Channel
-            if self.channel_busy > 0:
-                self.channel_busy -= 1
-                self.total_channel_busy_slots += 1
-                self.global_slot += 1
-                self.total_slots_run += 1
-                continue
-
-            # TDMA slot assignment
-            if s % self.tdma_slot_total == 0:
-                owner = (s // self.tdma_slot_total) % N
-                if len(self.queues[owner]) > 0 and self.link_up[owner]:
-                    arrival_t = self.queues[owner].pop(0)
-                    self.q_lens[owner] -= 1
-                    delay = (s + self.TX_slots) * self.slot_time_s - arrival_t
-                    self.tick_delay_sum += delay
-                    self.tick_delay_count += 1
-                    self.total_delay_sum += delay
-                    self.total_delay_count += 1
-                    self.tick_pkts_success += 1
-                    self.total_pkts_success += 1
-                    self.tick_bits_tx += self.payload_bits
-                    self.total_bits_tx += self.payload_bits
-                    self.channel_busy = self.tdma_slot_total - 1
-                    self.total_channel_busy_slots += self.TX_slots
-
-            self.global_slot += 1
-            self.total_slots_run += 1
-
-    # ------------------------------------------------------------------
-    # MAC: CSMA/CA (tick-scoped)
-    # ------------------------------------------------------------------
-    def _run_csma_slots(self):
-        N = self.N
-        c = self.config
-        cw_min = int(c["CW_MIN"])
-        cw_max = int(c["CW_MAX"])
-        max_retry = int(c["MAX_RETRY"])
-        difs_slots = int(c["DIFS_SLOTS"])
-
-        for s_offset in range(self.slots_per_tick):
-            s = self.global_slot
-            t = s * self.slot_time_s
-
-            # Arrivals
-            arriving = np.where(t >= self.next_arrival)[0]
-            for i in arriving:
-                if self.link_up[i]:
-                    if len(self.queues[i]) < self.QMAX:
-                        self.queues[i].append(t)
-                        self.q_lens[i] += 1
-                    else:
-                        self.tick_pkts_dropped += 1
-                        self.total_pkts_dropped += 1
-                self.next_arrival[i] += self.rng.exponential(1.0 / self.lam_node)
-
-            q_sum = int(self.q_lens.sum())
-
-            if self.channel_busy > 0:
-                self.channel_busy -= 1
-                self.total_channel_busy_slots += 1
-                if self.channel_busy == 0:
-                    self.idle_since = 0
-                self.global_slot += 1
-                self.total_slots_run += 1
-                continue
-
-            self.idle_since += 1
-
-            if q_sum > 0:
-                if self.idle_since <= difs_slots:
-                    self.global_slot += 1
-                    self.total_slots_run += 1
-                    continue
-
-                has_pkt = np.array([len(self.queues[i]) > 0 and self.link_up[i] for i in range(N)])
-                need_bo = has_pkt & (self.backoff < 0)
-                if need_bo.any():
-                    for i in np.where(need_bo)[0]:
-                        self.backoff[i] = self.rng.integers(0, self.cw[i] + 1)
-
-                tx_nodes = np.where(has_pkt & (self.backoff == 0))[0]
-                if tx_nodes.size == 0:
-                    counting = has_pkt & (self.backoff > 0)
-                    self.backoff[counting] -= 1
-                    self.global_slot += 1
-                    self.total_slots_run += 1
-                    continue
-
-                self.idle_since = 0
-                if tx_nodes.size == 1:
-                    i = tx_nodes[0]
-                    arrival_t = self.queues[i].pop(0)
-                    self.q_lens[i] -= 1
-                    delay = (s + self.busy_success) * self.slot_time_s - arrival_t
-                    self.tick_delay_sum += delay
-                    self.tick_delay_count += 1
-                    self.total_delay_sum += delay
-                    self.total_delay_count += 1
-                    self.tick_pkts_success += 1
-                    self.total_pkts_success += 1
-                    self.tick_bits_tx += self.payload_bits
-                    self.total_bits_tx += self.payload_bits
-                    self.cw[i] = cw_min
-                    self.retry[i] = 0
-                    self.backoff[i] = -1
-                    self.channel_busy = self.busy_success - 1
-                    self.total_channel_busy_slots += 1
-                else:
-                    # Collision
-                    self.tick_collisions += 1
-                    self.total_collisions += 1
-                    for i in tx_nodes:
-                        self.retry[i] += 1
-                        if self.retry[i] > max_retry:
-                            if len(self.queues[i]) > 0:
-                                self.queues[i].pop(0)
-                                self.q_lens[i] -= 1
-                                self.tick_pkts_dropped += 1
-                                self.total_pkts_dropped += 1
-                            self.retry[i] = 0
-                            self.cw[i] = cw_min
-                        else:
-                            self.cw[i] = min(2 * self.cw[i] + 1, cw_max)
-                        self.backoff[i] = -1
-                    self.channel_busy = self.busy_collision - 1
-                    self.total_channel_busy_slots += 1
-
-            self.global_slot += 1
-            self.total_slots_run += 1
-
-    # ------------------------------------------------------------------
-    # Snapshot
-    # ------------------------------------------------------------------
-    def _build_snapshot(self):
-        elapsed = max(self.sim_time + self.dt, 1e-12)
-        avg_delay = self.total_delay_sum / max(self.total_delay_count, 1)
-        tick_delay = self.tick_delay_sum / max(self.tick_delay_count, 1)
-        utilization = self.total_channel_busy_slots / max(self.total_slots_run, 1)
-        link_ratio = float(self.link_up.sum()) / max(self.N, 1)
-        avg_q = float(self.q_lens.sum()) / max(self.N, 1)
+    def get_config(self) -> dict[str, Any]:
+        effective_base = self._effective_base_params()
+        effective_env = self._effective_env_options()
+        policies = []
+        for descriptor in self._policy_registry:
+            policies.append(
+                {
+                    "id": descriptor["id"],
+                    "label": descriptor["label"],
+                    "model_type": descriptor["model_type"],
+                    "source": descriptor["source"],
+                    "checkpoint_dir": descriptor.get("checkpoint_dir"),
+                    "available": bool(descriptor.get("available", True)),
+                    "compatible": bool(descriptor.get("compatible", True)),
+                    "compatibility_note": descriptor.get("compatibility_note"),
+                    "loaded": descriptor["id"] in self._policy_cache,
+                }
+            )
 
         return {
-            "tick": self.tick_count,
-            "sim_time": round(self.sim_time, 4),
-            "N": self.N,
-            "protocol": str(self.config["MAC_PROTOCOL"]),
-            "positions": self.positions.tolist(),
-            "velocities": self.velocities.tolist(),
-            "distances": self.distances.tolist(),
-            "link_up": self.link_up.tolist(),
-            "q_lens": self.q_lens.tolist(),
-            "sink_pos": self.sink_pos.tolist(),
-            "bounds": list(self.bounds),
-            "comm_range": self.comm_range,
-            "metrics": {
-                "throughput_mbps": round(self.total_bits_tx / elapsed / 1e6, 4),
-                "tick_throughput_mbps": round(self.tick_bits_tx / max(self.dt, 1e-12) / 1e6, 4),
-                "avg_delay_ms": round(avg_delay * 1000, 4),
-                "tick_delay_ms": round(tick_delay * 1000, 4),
-                "total_drops": self.total_pkts_dropped,
-                "total_collisions": self.total_collisions,
-                "total_success": self.total_pkts_success,
-                "utilization": round(utilization, 4),
-                "link_up_ratio": round(link_ratio, 4),
-                "avg_queue_len": round(avg_q, 2),
+            "schema_version": "marl_ui_v2",
+            "base_params": copy.deepcopy(self.base_params),
+            "effective_base_params": effective_base,
+            "env_reset_options": copy.deepcopy(self.env_reset_options),
+            "effective_env_reset_options": effective_env,
+            "runtime": copy.deepcopy(self.runtime),
+            "runtime_status": copy.deepcopy(self.runtime_status),
+            "selected_preset_id": self.selected_preset_id,
+            "selected_policy_id": self.runtime["policy_id"],
+            "presets": copy.deepcopy(self._preset_registry),
+            "policies": policies,
+            "ui_schema": {
+                "mobility_models": MOBILITY_MODEL_OPTIONS,
+                "traffic_profiles": TRAFFIC_PROFILE_OPTIONS,
+                "graph_modes": GRAPH_MODE_OPTIONS,
+                "topology_presets": TOPOLOGY_PRESET_OPTIONS,
+                "failure_target_options": FAILURE_TARGET_OPTIONS,
+                "boolean_base_params": sorted(BOOLEAN_BASE_PARAMS),
+                "base_param_schema": _build_base_param_schema(),
+                "env_option_schema": _build_env_option_schema(),
+                "notes": {
+                    "base_reset": "Changing base config resets and rebuilds the live session.",
+                    "env_reset": "Changing advanced env controls resets and rebuilds the live session.",
+                    "action_semantics": "Each cluster head chooses MAC mode and rho per burst; the network does not switch MAC globally.",
+                },
             },
-            "marl_decisions": self.marl_decisions,
         }
 
     # ------------------------------------------------------------------
-    # Export (standard results folder)
+    # Session control
     # ------------------------------------------------------------------
-    def export(self, base_results_dir=None):
-        """Write results in the standard project folder format."""
-        if base_results_dir is None:
-            base_results_dir = os.path.join(project_root, "results")
+    def reset(self, seed: int | None = None, options: dict[str, Any] | None = None):
+        if seed is not None:
+            self.base_params["SEED"] = int(seed)
+        if options:
+            self.env_reset_options.update(copy.deepcopy(options))
 
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        protocol = self.config["MAC_PROTOCOL"]
-        phy_mbps = int(float(self.config["PHY_RATE_BPS"]) / 1e6)
+        self._apply_effective_params_to_globals()
+        descriptor = self._current_policy_descriptor()
+        session_kind = self._session_kind_for_policy(descriptor)
+        env_options = self._effective_env_options()
+        env_seed = int(self._effective_base_params().get("SEED", getattr(params, "SEED", 42)))
+
+        self.sarl_env = None
+        self.marl_env = None
+        self._session_kind = session_kind
+        self._session_done = False
+        self.last_infos = {}
+        self.tick_count = 0
+        self.sim_time = 0.0
+        self.history = []
+        self.cluster_step_history = []
+        self.graph_edge_history = []
+        self.membership_history = []
+        self._prev_summary_counts = {"splits": 0, "merges": 0, "reassociations": 0, "handovers": 0, "failure_events": 0}
+
+        if session_kind == "sarl":
+            self.sarl_env = SARLCentralEnv(seed=env_seed)
+            obs, _ = self.sarl_env.reset(seed=env_seed, options=env_options)
+            self.marl_env = self.sarl_env.marl_env
+            self._session_obs = obs
+        else:
+            self.marl_env = MARLMacEnv(seed=env_seed)
+            obs, infos = self.marl_env.reset(seed=env_seed, options=env_options)
+            self._session_obs = obs
+            self.last_infos = infos
+
+        self._reset_policy_runtime()
+        self._prev_leader_map = self._leader_map()
+
+        snapshot = self._build_snapshot(initial=True)
+        self.last_snapshot = snapshot
+        self._record_snapshot(snapshot, include_step_records=False)
+        return snapshot
+
+    def tick(self) -> dict[str, Any]:
+        if self.marl_env is None:
+            return self.reset()
+        if self._session_done:
+            return self.reset()
+
+        descriptor = self._current_policy_descriptor()
+
+        try:
+            if self._session_kind == "sarl":
+                action = self._select_sarl_action(descriptor)
+                next_obs, _reward, terminated, truncated, info = self.sarl_env.step(action)  # type: ignore[union-attr]
+                self._session_obs = next_obs
+                self.last_infos = info.get("raw_infos", {})
+                self._session_done = bool(terminated or truncated)
+            else:
+                actions = self._select_marl_actions(descriptor)
+                next_obs, _rewards, _terms, _truncs, infos = self.marl_env.step(actions)
+                self._session_obs = next_obs
+                self.last_infos = infos
+                self._session_done = not bool(self.marl_env.agents)
+        except Exception:
+            exc = sys.exc_info()[1]
+            if descriptor["id"] != "fixed:all_tdma_mid":
+                reason = str(exc) if exc is not None else "runtime failure during policy evaluation"
+                self._mark_policy_unavailable(descriptor["id"], reason)
+                fallback_id = choose_default_policy_id(self._policy_registry, exclude_ids={descriptor["id"]})
+                self.runtime["policy_id"] = fallback_id
+                self._session_kind = "marl"
+                self._session_done = False
+                self._set_policy_warning(f"{descriptor['label']} failed in the current UI session and was replaced by {self._policy_map[fallback_id]['label']}: {reason}")
+                return self.reset()
+            raise
+
+        self.tick_count = int(self.marl_env.current_step)
+        self.sim_time = round(self.tick_count * CC.BURST_TOTAL_TIME, 4)
+        snapshot = self._build_snapshot(initial=False)
+        self.last_snapshot = snapshot
+        self._record_snapshot(snapshot, include_step_records=True)
+        return snapshot
+
+    def set_base_param(self, key: str, value: Any) -> dict[str, Any]:
+        if key not in BASE_PARAM_KEYS:
+            raise KeyError(f"Unsupported base param: {key}")
+        old_value = self.base_params.get(key)
+        if key in BOOLEAN_BASE_PARAMS:
+            value = _coerce_value(value, as_bool=True)
+        elif key in FLOAT_BASE_PARAMS:
+            value = _coerce_value(value, as_float=True)
+        elif key in INT_BASE_PARAMS:
+            value = _coerce_value(value, as_int=True)
+        self.base_params[key] = value
+        entry = self._log_change(target="base_params", key=key, old_value=old_value, new_value=value)
+        if key == "N":
+            self._rebuild_preset_registry_if_needed()
+        self.reset()
+        return entry
+
+    def set_env_option(self, key: str, value: Any) -> dict[str, Any]:
+        if key not in ENV_OPTION_KEYS:
+            raise KeyError(f"Unsupported env option: {key}")
+        old_value = self.env_reset_options.get(key)
+        if value is None or value == "__inherit__" or (isinstance(value, str) and not value.strip()):
+            self.env_reset_options.pop(key, None)
+            entry = self._log_change(target="env_reset_options", key=key, old_value=old_value, new_value=None)
+            self.reset()
+            return entry
+        if key == "failure_schedule":
+            value = self._normalize_failure_schedule(value)
+        if key in BOOLEAN_ENV_OPTIONS:
+            value = _coerce_value(value, as_bool=True)
+        elif key in FLOAT_ENV_OPTIONS:
+            value = _coerce_value(value, as_float=True)
+        elif key in INT_ENV_OPTIONS:
+            value = _coerce_value(value, as_int=True)
+        self.env_reset_options[key] = copy.deepcopy(value)
+        entry = self._log_change(target="env_reset_options", key=key, old_value=old_value, new_value=value)
+        self.reset()
+        return entry
+
+    def set_runtime_value(self, key: str, value: Any) -> dict[str, Any]:
+        old_value = self.runtime.get(key)
+        if key == "policy_id":
+            return self.select_policy(str(value))
+        if key == "deterministic":
+            value = _coerce_value(value, as_bool=True)
+        elif key == "speed_factor":
+            value = max(0.1, float(value))
+        self.runtime[key] = value
+        if key == "deterministic":
+            self._reset_policy_runtime()
+        if self.marl_env is not None:
+            self.last_snapshot = self._build_snapshot(initial=True)
+        return self._log_change(target="runtime", key=key, old_value=old_value, new_value=value, mode="live")
+
+    def select_preset(self, preset_id: str) -> dict[str, Any]:
+        if preset_id not in self._preset_map:
+            raise KeyError(f"Unknown preset: {preset_id}")
+        old_value = self.selected_preset_id
+        self.selected_preset_id = preset_id
+        entry = self._log_change(target="preset", key="selected_preset_id", old_value=old_value, new_value=preset_id)
+        self.reset()
+        return entry
+
+    def select_policy(self, policy_id: str) -> dict[str, Any]:
+        if policy_id not in self._policy_map:
+            raise KeyError(f"Unknown policy: {policy_id}")
+        old_value = self.runtime.get("policy_id")
+        old_kind = self._session_kind_for_policy(self._current_policy_descriptor())
+        self.runtime["policy_id"] = policy_id
+        self._set_policy_warning(None)
+        new_kind = self._session_kind_for_policy(self._current_policy_descriptor())
+        entry = self._log_change(target="runtime", key="policy_id", old_value=old_value, new_value=policy_id, mode="live")
+        self._reset_policy_runtime()
+        if self.marl_env is None or new_kind != old_kind:
+            self.reset()
+        else:
+            self.last_snapshot = self._build_snapshot(initial=True)
+        return entry
+
+    def update_config(self, key: str, value: Any, mode: str = "restart") -> dict[str, Any]:
+        if key in BASE_PARAM_KEYS:
+            return self.set_base_param(key, value)
+        if key in ENV_OPTION_KEYS:
+            return self.set_env_option(key, value)
+        raise KeyError(f"Unsupported config key: {key}")
+
+    def apply_pending_changes(self):
+        return self.reset()
+
+    # ------------------------------------------------------------------
+    # Policy loading / action selection
+    # ------------------------------------------------------------------
+    def _reset_policy_runtime(self) -> None:
+        descriptor = self._current_policy_descriptor()
+        cached = self._policy_cache.get(descriptor["id"])
+        if cached is None:
+            return
+        model_type, model = cached
+        if model_type == "marl_gnn" and hasattr(model, "reset_memory"):
+            model.reset_memory()
+        if model_type == "marl" and self.runtime.get("deterministic") and hasattr(model, "eps_decay"):
+            model.steps_done = int(model.eps_decay) * 10
+
+    def _ensure_policy_loaded(self, descriptor: dict[str, Any]) -> tuple[str, Any] | None:
+        if descriptor["source"] == "fixed":
+            return None
+        cached = self._policy_cache.get(descriptor["id"])
+        if cached is not None:
+            return cached
+
+        from experiments.run_unified_experiment import load_eval_models
+
+        models = load_eval_models(descriptor["checkpoint_dir"], _silent_log)
+        selected = models.get(descriptor["label"])
+        if selected is None:
+            raise RuntimeError(f"Could not load policy {descriptor['label']} from {descriptor['checkpoint_dir']}")
+        self._policy_cache[descriptor["id"]] = selected
+        self._reset_policy_runtime()
+        return selected
+
+    def _alive_mask(self) -> np.ndarray:
+        if self.marl_env is None:
+            return np.zeros(CC.C_MAX, dtype=np.bool_)
+        return np.array(
+            [1 if self.marl_env.cluster_manager.get_members(i) else 0 for i in range(CC.C_MAX)],
+            dtype=np.bool_,
+        )
+
+    def _select_marl_actions(self, descriptor: dict[str, Any]) -> dict[str, int]:
+        assert self.marl_env is not None
+        if descriptor["source"] == "fixed":
+            action_id = int(descriptor["fixed_action"])
+            return {agent: action_id for agent in self.marl_env.possible_agents}
+
+        loaded = self._ensure_policy_loaded(descriptor)
+        assert loaded is not None
+        model_type, model = loaded
+
+        if model_type == "marl":
+            obs_all = np.stack([self._session_obs[a] for a in self.marl_env.possible_agents])
+            alive_mask = self._alive_mask()
+            if self.runtime.get("deterministic") and hasattr(model, "eps_decay"):
+                model.steps_done = int(model.eps_decay) * 10
+            actions = model.select_actions(obs_all, alive_mask=alive_mask)
+            return {agent: int(actions[idx]) for idx, agent in enumerate(self.marl_env.possible_agents)}
+
+        if model_type == "marl_gnn":
+            import torch
+
+            x, edge_index, alive_mask = self.marl_env.get_global_graph_state()
+            x_t = torch.tensor(x, dtype=torch.float32)
+            e_t = torch.tensor(edge_index, dtype=torch.long)
+            alive_t = torch.tensor(alive_mask, dtype=torch.bool)
+            with torch.no_grad():
+                q_vals = model(x_t, e_t, alive_t)
+            return {
+                agent: int(q_vals[idx].argmax().item()) if alive_mask[idx] else 0
+                for idx, agent in enumerate(self.marl_env.possible_agents)
+            }
+
+        raise RuntimeError(f"Unsupported MARL model type: {model_type}")
+
+    def _select_sarl_action(self, descriptor: dict[str, Any]) -> np.ndarray:
+        if descriptor["source"] == "fixed":
+            action_id = int(descriptor["fixed_action"])
+            return np.full(CC.C_MAX, action_id, dtype=np.int64)
+
+        loaded = self._ensure_policy_loaded(descriptor)
+        assert loaded is not None
+        _model_type, model = loaded
+        action, _ = model.predict(self._session_obs, deterministic=bool(self.runtime.get("deterministic", True)))
+        return np.asarray(action, dtype=np.int64)
+
+    # ------------------------------------------------------------------
+    # Snapshot builders
+    # ------------------------------------------------------------------
+    def _leader_map(self) -> dict[int, int]:
+        assert self.marl_env is not None
+        cm = self.marl_env.cluster_manager
+        return {cid: int(cm.get_leader(cid)) for cid in cm.get_active_cluster_ids()}
+
+    def _degree_map(self, active_cids: list[int], edge_index: np.ndarray) -> dict[int, int]:
+        degree = {int(cid): 0 for cid in active_cids}
+        if edge_index.size == 0:
+            return degree
+        for src_local, _dst_local in edge_index.T:
+            if src_local >= len(active_cids):
+                continue
+            degree[int(active_cids[src_local])] += 1
+        return degree
+
+    def _build_metrics(self) -> dict[str, Any]:
+        assert self.marl_env is not None
+        summary = self.marl_env.get_last_step_summary()
+        diagnostics = self.marl_env.cluster_manager.get_diagnostics()
+        if not summary:
+            summary = {
+                "step": int(self.marl_env.current_step),
+                "offered_pps": float(self.marl_env.current_offered_pps),
+                "throughput_mbps": 0.0,
+                "drops": 0.0,
+                "collisions": 0.0,
+                "coord_success": 0.0,
+                "num_clusters": int(diagnostics["num_clusters"]),
+                "avg_cluster_size": float(diagnostics["mean_cluster_size"]),
+                "cluster_size_std": float(diagnostics["cluster_size_std"]),
+                "avg_graph_degree": float(diagnostics["avg_graph_degree"]),
+                "graph_density": float(diagnostics["graph_density"]),
+                "reassociations": int(diagnostics["reassociations"]),
+                "splits": int(diagnostics["splits"]),
+                "merges": int(diagnostics["merges"]),
+                "handovers": int(diagnostics["handovers"]),
+                "failure_events": 0,
+            }
+
+        cluster_records = self.marl_env.get_last_step_records()
+        summary = dict(summary)
+        if cluster_records:
+            summary["avg_local_backlog"] = float(np.mean([row["local_backlog"] for row in cluster_records]))
+            summary["avg_inter_backlog"] = float(np.mean([row["inter_backlog"] for row in cluster_records]))
+        else:
+            summary["avg_local_backlog"] = 0.0
+            summary["avg_inter_backlog"] = 0.0
+        summary["decision_overhead_bytes"] = float(self.marl_env.estimate_neighbor_summary_overhead_bytes())
+        return summary
+
+    def _mapped_edges(self, edge_index: np.ndarray, active_cids: list[int]) -> list[dict[str, int]]:
+        unique_pairs = set()
+        rows: list[dict[str, int]] = []
+        if edge_index.size == 0:
+            return rows
+        for src_local, dst_local in edge_index.T:
+            if src_local >= len(active_cids) or dst_local >= len(active_cids):
+                continue
+            src = int(active_cids[src_local])
+            dst = int(active_cids[dst_local])
+            pair = tuple(sorted((src, dst)))
+            if src == dst or pair in unique_pairs:
+                continue
+            unique_pairs.add(pair)
+            rows.append({"source": src, "target": dst})
+        return rows
+
+    def _build_nodes(self) -> list[dict[str, Any]]:
+        assert self.marl_env is not None
+        cm = self.marl_env.cluster_manager
+        positions = np.asarray(self.marl_env.mobility_model.positions, dtype=np.float64)
+        velocities = np.asarray(self.marl_env.mobility_model.velocities, dtype=np.float64)
+        active_ids = set(cm.get_active_cluster_ids())
+        nodes = []
+        for idx in range(int(getattr(params, "N", positions.shape[0]))):
+            cluster_id = int(cm.assignment[idx]) if idx < len(cm.assignment) else -1
+            leader_id = int(cm.get_leader(cluster_id)) if cluster_id >= 0 else -1
+            speed = float(np.linalg.norm(velocities[idx]))
+            role_label = "leader" if idx == leader_id else ("member" if cluster_id >= 0 else "inactive")
+            nodes.append(
+                {
+                    "id": int(idx),
+                    "position": positions[idx].astype(float).tolist(),
+                    "velocity": velocities[idx].astype(float).tolist(),
+                    "speed": speed,
+                    "cluster_id": cluster_id,
+                    "leader": bool(idx == leader_id),
+                    "role_label": role_label,
+                    "queue": float(self.marl_env.simulated_queues[idx]),
+                    "energy": float(cm.energy[idx]),
+                    "active_cluster": bool(cluster_id in active_ids),
+                }
+            )
+        return nodes
+
+    def _cluster_health_inputs(
+        self,
+        *,
+        cluster_state: Any,
+        graph_degree: int,
+        active_cluster_count: int,
+    ) -> dict[str, float]:
+        assert self.marl_env is not None
+        cm = self.marl_env.cluster_manager
+        leader = int(cluster_state.leader_idx)
+        velocities = np.asarray(self.marl_env.mobility_model.velocities, dtype=np.float64)
+
+        energy_norm = float(cm.energy[leader] / CC.E_INIT)
+        leader_speed = float(np.linalg.norm(velocities[leader]))
+        mobility_stability = float(1.0 / (1.0 + leader_speed / 30.0))
+        queue_norm = float(self.marl_env.simulated_queues[leader] / 100.0)
+        degree_norm = float(graph_degree / max(active_cluster_count - 1, 1))
+        risk = float(max(1.0 - energy_norm, 0.0))
+
+        return {
+            "energy_norm": energy_norm,
+            "degree_norm": degree_norm,
+            "mobility_stability": mobility_stability,
+            "queue_norm": queue_norm,
+            "risk": risk,
+            "leader_speed": leader_speed,
+            "leader_queue": float(self.marl_env.simulated_queues[leader]),
+            "leader_energy": float(cm.energy[leader]),
+        }
+
+    def _build_clusters(self) -> list[dict[str, Any]]:
+        assert self.marl_env is not None
+        cm = self.marl_env.cluster_manager
+        active_ids = cm.get_active_cluster_ids()
+        degree_map = self._degree_map(list(self.marl_env.true_active_cids), self.marl_env.true_edge_index)
+        failures = {int(event["cluster_id"]) for event in getattr(self.marl_env, "failure_events_triggered", [])}
+        clusters = []
+        for cid in active_ids:
+            cs = cm.clusters[cid]
+            info = self.last_infos.get(f"cluster_{cid}", {})
+            chosen_mac = info.get("chosen_mac")
+            graph_degree = int(info.get("graph_degree", degree_map.get(cid, 0)))
+            health_inputs = self._cluster_health_inputs(
+                cluster_state=cs,
+                graph_degree=graph_degree,
+                active_cluster_count=len(active_ids),
+            )
+            clusters.append(
+                {
+                    "cluster_id": int(cid),
+                    "leader_id": int(cs.leader_idx),
+                    "members": [int(member) for member in cs.member_indices],
+                    "cluster_size": int(len(cs.member_indices)),
+                    "chosen_mac": int(chosen_mac) if chosen_mac is not None else None,
+                    "mac_label": "TDMA" if chosen_mac == 0 else ("CSMA_CA" if chosen_mac == 1 else "N/A"),
+                    "rho": float(info.get("rho", cs.recent_rho)),
+                    "t1_time": float(info.get("t1_time", 0.0)),
+                    "t2_time": float(info.get("t2_time", 0.0)),
+                    "throughput_mbps": float(info.get("throughput_mbps", 0.0)),
+                    "inter_throughput_mbps": float(info.get("inter_throughput_mbps", 0.0)),
+                    "delay_ms": float(info.get("delay_ms", cs.agg_delay)),
+                    "inter_delay_ms": float(info.get("inter_delay_ms", 0.0)),
+                    "local_backlog": float(info.get("local_backlog", cs.agg_queue)),
+                    "inter_backlog": float(info.get("inter_backlog", cs.coord_backlog + cs.relay_demand)),
+                    "graph_degree": graph_degree,
+                    "leader_health": float(info.get("leader_health", 0.0)),
+                    "health_inputs": health_inputs,
+                    "handover_flag": bool(info.get("handover_flag", cs.handover_flag)),
+                    "failure_flag": bool(cid in failures),
+                    "recent_t1_util": float(cs.recent_t1_util),
+                    "recent_t2_util": float(cs.recent_t2_util),
+                    "recent_coord_success": float(cs.recent_coord_success),
+                }
+            )
+        return clusters
+
+    def _build_events(self, summary: dict[str, Any]) -> dict[str, Any]:
+        current_leaders = self._leader_map()
+        changed_clusters = [
+            cid
+            for cid, leader_id in current_leaders.items()
+            if cid in self._prev_leader_map and self._prev_leader_map[cid] != leader_id
+        ]
+        failures = [copy.deepcopy(event) for event in getattr(self.marl_env, "failure_events_triggered", [])]
+
+        counts = {
+            "splits": max(int(summary.get("splits", 0)) - self._prev_summary_counts["splits"], 0),
+            "merges": max(int(summary.get("merges", 0)) - self._prev_summary_counts["merges"], 0),
+            "reassociations": max(int(summary.get("reassociations", 0)) - self._prev_summary_counts["reassociations"], 0),
+            "handovers": max(int(summary.get("handovers", 0)) - self._prev_summary_counts["handovers"], 0),
+            "failure_events": max(int(summary.get("failure_events", 0)) - self._prev_summary_counts["failure_events"], 0),
+        }
+        tick = int(self.marl_env.current_step)
+        sim_time = round(float(tick) * CC.BURST_TOTAL_TIME, 4)
+        feed: list[dict[str, Any]] = []
+        for cid in changed_clusters:
+            feed.append(
+                {
+                    "id": f"{tick}:handover:{cid}",
+                    "tick": tick,
+                    "sim_time": sim_time,
+                    "kind": "handover",
+                    "severity": "warning",
+                    "cluster_id": int(cid),
+                    "message": f"Cluster {cid} changed leader in this burst.",
+                }
+            )
+        for failure in failures:
+            feed.append(
+                {
+                    "id": f"{tick}:failure:{failure.get('cluster_id', 'na')}",
+                    "tick": tick,
+                    "sim_time": sim_time,
+                    "kind": "failure",
+                    "severity": "danger",
+                    "cluster_id": int(failure.get("cluster_id", -1)),
+                    "message": f"Failure triggered at cluster {int(failure.get('cluster_id', -1))} via {failure.get('mode', 'explicit')}.",
+                }
+            )
+        for key, label in (("splits", "split"), ("merges", "merge"), ("reassociations", "reassociation")):
+            count = counts[key]
+            if count > 0:
+                suffix = "" if count == 1 else "s"
+                feed.append(
+                    {
+                        "id": f"{tick}:{key}:{count}",
+                        "tick": tick,
+                        "sim_time": sim_time,
+                        "kind": key,
+                        "severity": "info",
+                        "message": f"{count} {label}{suffix} recorded in this burst.",
+                    }
+                )
+
+        self._prev_summary_counts = {
+            "splits": int(summary.get("splits", 0)),
+            "merges": int(summary.get("merges", 0)),
+            "reassociations": int(summary.get("reassociations", 0)),
+            "handovers": int(summary.get("handovers", 0)),
+            "failure_events": int(summary.get("failure_events", 0)),
+        }
+        self._prev_leader_map = current_leaders
+
+        return {
+            "counts": counts,
+            "handover_clusters": [int(cid) for cid in changed_clusters],
+            "failure_events": failures,
+            "feed": feed,
+        }
+
+    def _build_snapshot(self, initial: bool = False) -> dict[str, Any]:
+        assert self.marl_env is not None
+        effective = self._effective_base_params()
+        metrics = self._build_metrics()
+        clusters = self._build_clusters()
+        nodes = self._build_nodes()
+        scenario_context = self._build_scenario_context()
+        true_active = list(self.marl_env.true_active_cids)
+        obs_active = list(self.marl_env.obs_active_cids)
+        true_edges = self._mapped_edges(self.marl_env.true_edge_index, true_active)
+        observed_edges = self._mapped_edges(self.marl_env.obs_edge_index, obs_active)
+        graph_stats = self._build_graph_stats(
+            true_edges=true_edges,
+            observed_edges=observed_edges,
+            cluster_count=len(clusters),
+        )
+        events = {
+            "counts": {"splits": 0, "merges": 0, "reassociations": 0, "handovers": 0, "failure_events": 0},
+            "handover_clusters": [],
+            "failure_events": [],
+            "feed": [],
+        }
+        if not initial:
+            events = self._build_events(metrics)
+
+        descriptor = self._current_policy_descriptor()
+        return {
+            "schema_version": "marl_ui_v2",
+            "tick": int(self.marl_env.current_step),
+            "sim_time": round(float(self.marl_env.current_step) * CC.BURST_TOTAL_TIME, 4),
+            "N": int(effective.get("N", getattr(params, "N", len(nodes)))),
+            "bounds": [float(effective["AREA_X"]), float(effective["AREA_Y"]), float(effective["AREA_Z"])],
+            "nodes": nodes,
+            "clusters": clusters,
+            "graphs": {
+                "true_edges": true_edges,
+                "observed_edges": observed_edges,
+                "stats": graph_stats,
+            },
+            "metrics": metrics,
+            "runtime": {
+                "policy_id": descriptor["id"],
+                "policy_label": descriptor["label"],
+                "policy_type": descriptor["model_type"],
+                "policy_source": descriptor["source"],
+                "policy_available": bool(descriptor.get("available", True)),
+                "policy_compatible": bool(descriptor.get("compatible", True)),
+                "policy_compatibility_note": descriptor.get("compatibility_note"),
+                "policy_warning": self.runtime_status.get("policy_warning"),
+                "deterministic": bool(self.runtime.get("deterministic", True)),
+                "speed_factor": float(self.runtime.get("speed_factor", 1.0)),
+            },
+            "scenario": {
+                "preset_id": self.selected_preset_id,
+                "preset_label": self._current_preset()["label"],
+                "preset_group": self._current_preset()["group_label"],
+                "study_block": self._current_preset().get("study_block"),
+                "preset_description": self._current_preset().get("description"),
+                "param_overrides": copy.deepcopy(self._current_preset()["param_overrides"]),
+                "preset_env_options": copy.deepcopy(self._current_preset()["env_options"]),
+                "manual_env_options": copy.deepcopy(self.env_reset_options),
+                "env_options": copy.deepcopy(self._effective_env_options()),
+                "context_items": scenario_context["context_items"],
+                "summary_lines": scenario_context["summary_lines"],
+                "impairment_lines": scenario_context["impairment_lines"],
+            },
+            "events": events,
+        }
+
+    def _record_snapshot(self, snapshot: dict[str, Any], *, include_step_records: bool) -> None:
+        tick = int(snapshot["tick"])
+        sim_time = float(snapshot["sim_time"])
+        self.history.append(copy.deepcopy(snapshot))
+
+        for node in snapshot["nodes"]:
+            self.membership_history.append(
+                {
+                    "tick": tick,
+                    "timestamp": sim_time,
+                    "uav_id": int(node["id"]),
+                    "cluster_id": int(node["cluster_id"]),
+                    "is_leader": int(bool(node["leader"])),
+                }
+            )
+
+        for edge_kind, edges in (("true", snapshot["graphs"]["true_edges"]), ("observed", snapshot["graphs"]["observed_edges"])):
+            for edge in edges:
+                self.graph_edge_history.append(
+                    {
+                        "tick": tick,
+                        "timestamp": sim_time,
+                        "edge_kind": edge_kind,
+                        "source_cluster_id": int(edge["source"]),
+                        "target_cluster_id": int(edge["target"]),
+                    }
+                )
+
+        if include_step_records and self.marl_env is not None:
+            self.cluster_step_history.extend(self.marl_env.get_last_step_records())
+
+    # ------------------------------------------------------------------
+    # Export
+    # ------------------------------------------------------------------
+    def export(self, base_results_dir: str | None = None) -> str:
+        if base_results_dir is None:
+            base_results_dir = self.results_root
+
+        ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        effective = self._effective_base_params()
+        descriptor = self._current_policy_descriptor()
         run_dir = os.path.join(
             base_results_dir,
-            f"UI_N{self.N}_PHY{phy_mbps}M_{protocol}",
+            f"UI_MARL_N{int(effective['N'])}_{_slugify(descriptor['label'])}",
             f"trial_{ts}",
         )
         csv_dir = os.path.join(run_dir, "csv")
@@ -631,85 +1619,56 @@ class SimulationEngine:
         os.makedirs(img_dir, exist_ok=True)
         os.makedirs(log_dir, exist_ok=True)
 
-        # metadata.json
-        meta = {
-            "timestamp": datetime.datetime.now().isoformat(),
-            "source": "simulator_ui",
-            "seed": self.config["SEED"],
-            "config": {k: v for k, v in self.config.items()},
-            "ticks_run": self.tick_count,
-            "sim_time_s": self.sim_time,
+        metadata = {
+            "timestamp": dt.datetime.now().isoformat(),
+            "source": "simulator_ui_live_marl",
+            "ticks_run": int(self.tick_count),
+            "sim_time_s": float(self.sim_time),
+            "config": self.get_config(),
+            "selected_policy": descriptor,
+            "selected_preset": self._current_preset(),
         }
-        with open(os.path.join(run_dir, "metadata.json"), "w") as f:
-            json.dump(meta, f, indent=2, default=str)
+        with open(os.path.join(run_dir, "metadata.json"), "w", encoding="utf-8") as handle:
+            json.dump(metadata, handle, indent=2, default=str)
 
-        # mobility_positions.csv
-        rows_pos = []
-        for h in self.history:
-            pos = h["positions"]
-            vel = h["velocities"]
-            for i in range(self.N):
-                sp = float(np.linalg.norm(vel[i]))
-                rows_pos.append({
-                    "timestamp": round(h["t"], 6), "uav_id": i,
-                    "x": round(pos[i][0], 4), "y": round(pos[i][1], 4), "z": round(pos[i][2], 4),
-                    "vx": round(vel[i][0], 4), "vy": round(vel[i][1], 4), "vz": round(vel[i][2], 4),
-                    "speed": round(sp, 4),
-                })
+        rows_pos: list[dict[str, Any]] = []
+        for snapshot in self.history:
+            for node in snapshot["nodes"]:
+                velocity = np.asarray(node["velocity"], dtype=np.float64)
+                position = node["position"]
+                rows_pos.append(
+                    {
+                        "timestamp": round(float(snapshot["sim_time"]), 6),
+                        "uav_id": int(node["id"]),
+                        "x": round(float(position[0]), 4),
+                        "y": round(float(position[1]), 4),
+                        "z": round(float(position[2]), 4),
+                        "vx": round(float(velocity[0]), 4),
+                        "vy": round(float(velocity[1]), 4),
+                        "vz": round(float(velocity[2]), 4),
+                        "speed": round(float(np.linalg.norm(velocity)), 4),
+                    }
+                )
         pd.DataFrame(rows_pos).to_csv(os.path.join(csv_dir, "mobility_positions.csv"), index=False)
 
-        # uav_sink_distance.csv
-        rows_d = []
-        for h in self.history:
-            for i in range(self.N):
-                rows_d.append({
-                    "timestamp": round(h["t"], 6), "uav_id": i,
-                    "d_to_sink": round(h["distances"][i], 4),
-                    "link_up": int(h["link_up"][i]),
-                })
-        pd.DataFrame(rows_d).to_csv(os.path.join(csv_dir, "uav_sink_distance.csv"), index=False)
+        pd.DataFrame(self.cluster_step_history if self.cluster_step_history else []).to_csv(
+            os.path.join(csv_dir, "cluster_step_records.csv"),
+            index=False,
+        )
+        pd.DataFrame(self.graph_edge_history).to_csv(os.path.join(csv_dir, "cluster_graph_edges.csv"), index=False)
+        pd.DataFrame(self.membership_history).to_csv(os.path.join(csv_dir, "node_cluster_membership.csv"), index=False)
 
-        # config_changes.csv
         if self.config_change_log:
-            pd.DataFrame(self.config_change_log).to_csv(
-                os.path.join(csv_dir, "config_changes.csv"), index=False)
-
-        # Generate mobility plots
-        try:
-            from algorithms.mobility.plotting import (
-                plot_trajectories_3d, plot_distance_vs_time, plot_link_up_ratio,
-            )
-            hist_pos = [h["positions"] for h in self.history]
-            hist_dist = [h["distances"] for h in self.history]
-            hist_lu = [h["link_up"] for h in self.history]
-            hist_times = [h["t"] for h in self.history]
-
-            plot_trajectories_3d(hist_pos, hist_times, self.N, self.bounds,
-                                self.sink_pos, img_dir, top_k=min(5, self.N))
-            plot_distance_vs_time(hist_dist, hist_times, self.N,
-                                 self.comm_range, img_dir, top_k=min(5, self.N))
-            plot_link_up_ratio(hist_lu, hist_times, self.N, img_dir)
-        except Exception as e:
-            print(f"Warning: plot generation failed: {e}")
-
-        # RL selection CSV + plot
-        if self.rl_selections:
-            rl_df = pd.DataFrame(self.rl_selections)
-            rl_df.to_csv(os.path.join(csv_dir, "qlearning_mac_selection.csv"), index=False)
-            try:
-                import matplotlib
-                matplotlib.use("Agg")
-                import matplotlib.pyplot as plt
-                fig, ax = plt.subplots(figsize=(8, 4))
-                colors = rl_df["mac_selected"].map({"TDMA": "#2196F3", "CSMA_CA": "#FF5722"})
-                ax.scatter(rl_df["sim_time"], rl_df["mac_selected"], c=colors, s=12, alpha=0.7)
-                ax.set_xlabel("Simulation Time (s)")
-                ax.set_ylabel("Selected MAC")
-                ax.set_title("RL MAC Selection Over Time")
-                fig.tight_layout()
-                fig.savefig(os.path.join(img_dir, "qlearning_selected_mac_vs_traffic_rate.png"), dpi=150)
-                plt.close(fig)
-            except Exception as e:
-                print(f"Warning: RL plot failed: {e}")
+            pd.DataFrame(self.config_change_log).to_csv(os.path.join(csv_dir, "config_changes.csv"), index=False)
 
         return run_dir
+
+
+__all__ = [
+    "BASE_PARAM_KEYS",
+    "ENV_OPTION_KEYS",
+    "SimulationEngine",
+    "build_preset_registry",
+    "choose_default_policy_id",
+    "discover_policy_descriptors",
+]

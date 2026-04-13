@@ -1,118 +1,213 @@
-// main.js — Application Coordinator for FANET 3D Simulator
-
 (function () {
     'use strict';
 
-    let sceneBuilt = false;
+    let latestState = null;
+    let simRunning = false;
 
-    // ---- Initialize modules ----
+    function showToast(message, duration = 2400) {
+        const toast = document.getElementById('toast');
+        toast.textContent = message;
+        toast.classList.remove('hidden');
+        window.clearTimeout(toast._timer);
+        toast._timer = window.setTimeout(() => toast.classList.add('hidden'), duration);
+    }
+
+    function policyCompatText(runtime) {
+        if (!runtime) {
+            return 'compat unknown';
+        }
+        if (runtime.policy_compatible) {
+            return 'compatible';
+        }
+        return 'incompatible';
+    }
+
+    function ensureSelections(state) {
+        if (!state || !state.clusters || state.clusters.length === 0) {
+            Panels.selectedClusterId = null;
+            Panels.selectedNodeId = null;
+            Scene.setSelectedCluster(null);
+            Scene.setSelectedNode(null);
+            return;
+        }
+
+        const clusters = state.clusters;
+        const nodes = state.nodes || [];
+        const clusterExists = clusters.some(cluster => cluster.cluster_id === Panels.selectedClusterId);
+        if (!clusterExists) {
+            Panels.selectedClusterId = clusters[0].cluster_id;
+        }
+
+        const selectedCluster = clusters.find(cluster => cluster.cluster_id === Panels.selectedClusterId) || clusters[0];
+        const nodeExists = nodes.some(node => node.id === Panels.selectedNodeId);
+        const nodeInsideCluster = selectedCluster.members.includes(Panels.selectedNodeId);
+        if (!nodeExists || !nodeInsideCluster) {
+            Panels.selectedNodeId = selectedCluster.leader_id;
+        }
+
+        Scene.setSelectedCluster(Panels.selectedClusterId);
+        Scene.setSelectedNode(Panels.selectedNodeId);
+    }
+
+    function updateStatusStrip(state) {
+        const tdmaCount = (state.clusters || []).filter(cluster => cluster.mac_label === 'TDMA').length;
+        const csmaCount = (state.clusters || []).filter(cluster => cluster.mac_label === 'CSMA_CA').length;
+        const warning = state.runtime.policy_warning || state.runtime.policy_compatibility_note || 'No warnings';
+
+        document.getElementById('status-session').textContent = simRunning ? 'Running' : 'Paused';
+        document.getElementById('status-time').textContent = `t = ${state.sim_time.toFixed(2)} s`;
+        document.getElementById('status-tick').textContent = String(state.tick);
+        document.getElementById('status-policy').textContent = state.runtime.policy_label;
+        document.getElementById('status-policy-source').textContent = `${state.runtime.policy_source} / ${state.runtime.policy_type}`;
+        document.getElementById('status-mac').textContent = `${tdmaCount} TDMA / ${csmaCount} CSMA`;
+        document.getElementById('status-policy-compat').textContent = policyCompatText(state.runtime);
+        document.getElementById('status-preset').textContent = state.scenario.preset_label;
+        document.getElementById('status-study-block').textContent = state.scenario.study_block || state.scenario.preset_group;
+        document.getElementById('status-warning').textContent = warning;
+        document.getElementById('warning-card').classList.toggle('warning', !!warning && warning !== 'No warnings');
+    }
+
+    function renderState(state) {
+        if (latestState && state.tick < latestState.tick) {
+            Charts.reset();
+            Panels.resetEventFeed();
+        }
+
+        latestState = state;
+        ensureSelections(state);
+        Scene.updateFromSnapshot(state);
+        updateStatusStrip(state);
+
+        Panels.renderScenario(state.scenario);
+        Panels.renderRuntime(state.runtime, state.clusters || []);
+        Panels.renderClusterList(state.clusters, Panels.selectedClusterId);
+        Panels.renderClusterInspector(state, Panels.selectedClusterId);
+        Panels.renderNodeInspector(state, Panels.selectedNodeId);
+        Panels.renderGraphInspector(state);
+        Panels.renderEventFeed(state.events?.feed || []);
+        Panels.renderDiagnostics(state);
+
+        Charts.pushData(state.metrics, state.sim_time);
+    }
+
     Scene.init();
     Charts.init();
     Panels.init();
+    Panels.onNotice = showToast;
 
-    // ---- WebSocket message handlers ----
+    Panels.onClusterSelected = (clusterId) => {
+        Panels.selectedClusterId = clusterId;
+        if (latestState) {
+            const cluster = latestState.clusters.find(item => item.cluster_id === clusterId);
+            if (cluster) {
+                Panels.selectedNodeId = cluster.leader_id;
+            }
+            Scene.setSelectedCluster(clusterId);
+            Scene.setSelectedNode(Panels.selectedNodeId);
+            Panels.renderClusterList(latestState.clusters, clusterId);
+            Panels.renderClusterInspector(latestState, clusterId);
+            Panels.renderNodeInspector(latestState, Panels.selectedNodeId);
+            Scene.updateFromSnapshot(latestState);
+        }
+    };
+
+    Panels.onNodeSelected = (nodeId) => {
+        Panels.selectedNodeId = nodeId;
+        if (latestState) {
+            const node = latestState.nodes.find(item => item.id === nodeId);
+            if (node && node.cluster_id >= 0) {
+                Panels.selectedClusterId = node.cluster_id;
+            }
+            Scene.setSelectedCluster(Panels.selectedClusterId);
+            Scene.setSelectedNode(nodeId);
+            Panels.renderClusterList(latestState.clusters, Panels.selectedClusterId);
+            Panels.renderClusterInspector(latestState, Panels.selectedClusterId);
+            Panels.renderNodeInspector(latestState, nodeId);
+            Scene.updateFromSnapshot(latestState);
+        }
+    };
+
+    Scene.onNodeSelected = (nodeId) => {
+        if (typeof Panels.onNodeSelected === 'function') {
+            Panels.onNodeSelected(nodeId);
+        }
+    };
+
     WS.on('CONFIG', (msg) => {
-        Panels.populateFromConfig(msg.data);
-        // Build/rebuild scene with current bounds
-        const c = msg.data;
-        Scene.buildScene(
-            [c.AREA_X, c.AREA_Y, c.AREA_Z],
-            [c.SINK_X, c.SINK_Y, c.SINK_Z],
-            c.COMM_RANGE_R
-        );
-        sceneBuilt = true;
-        document.getElementById('sim-protocol').textContent = c.MAC_PROTOCOL || 'CSMA_CA';
+        Panels.populateConfig(msg.data);
     });
 
     WS.on('STATE', (msg) => {
-        const state = msg.data;
-
-        // Build scene on first state if not yet built
-        if (!sceneBuilt) {
-            Scene.buildScene(state.bounds, state.sink_pos, state.comm_range);
-            sceneBuilt = true;
-        }
-
-        // Push into interpolation buffer (B2: smooth motion)
-        Scene.pushState(state);
-
-        // Update 3D scene (immediate — sets colors, link status, orientation)
-        Scene.updateFromSnapshot(state);
-
-        // Update metric badges
-        const m = state.metrics;
-        document.getElementById('val-throughput').textContent = m.throughput_mbps.toFixed(2) + ' Mbps';
-        document.getElementById('val-delay').textContent = m.avg_delay_ms.toFixed(2) + ' ms';
-        document.getElementById('val-drops').textContent = m.total_drops;
-        document.getElementById('val-linkup').textContent = (m.link_up_ratio * 100).toFixed(0) + '%';
-
-        // Update sim info bar
-        document.getElementById('sim-time').textContent = 't = ' + state.sim_time.toFixed(2) + ' s';
-        document.getElementById('sim-tick').textContent = 'tick: ' + state.tick;
-        document.getElementById('sim-protocol').textContent = state.protocol;
-
-        // Push to charts
-        Charts.pushData(m, state.sim_time);
+        renderState(msg.data);
     });
 
     WS.on('ACK_CONFIG', (msg) => {
-        showToast(`Config: ${msg.key} → ${msg.new} (${msg.mode})`);
+        const value = msg.new === null
+            ? 'inherit preset/default'
+            : (typeof msg.new === 'object' ? JSON.stringify(msg.new) : msg.new);
+        showToast(`${msg.key} -> ${value}`);
     });
 
     WS.on('ACK', (msg) => {
         if (msg.action === 'RESET') {
+            simRunning = false;
             Charts.reset();
-            sceneBuilt = false;
-            WS.send('GET_CONFIG', {});
-            showToast('Simulation reset');
+            Panels.resetEventFeed();
+            showToast('Session reset');
+        }
+        if (msg.action === 'RUN') {
+            simRunning = true;
+        }
+        if (msg.action === 'PAUSE') {
+            simRunning = false;
+        }
+        if (latestState) {
+            updateStatusStrip(latestState);
         }
     });
 
     WS.on('EXPORT_DONE', (msg) => {
-        showToast('Exported to: ' + msg.path);
+        showToast(`Exported to ${msg.path}`);
     });
 
-    // ---- Playback controls ----
     document.getElementById('btn-play').addEventListener('click', () => {
+        simRunning = true;
+        if (latestState) {
+            updateStatusStrip(latestState);
+        }
         WS.send('RUN', {});
     });
-
     document.getElementById('btn-pause').addEventListener('click', () => {
+        simRunning = false;
+        if (latestState) {
+            updateStatusStrip(latestState);
+        }
         WS.send('PAUSE', {});
     });
-
     document.getElementById('btn-step').addEventListener('click', () => {
+        simRunning = false;
+        if (latestState) {
+            updateStatusStrip(latestState);
+        }
         WS.send('STEP', {});
     });
-
     document.getElementById('btn-reset').addEventListener('click', () => {
+        simRunning = false;
+        Charts.reset();
+        Panels.resetEventFeed();
+        if (latestState) {
+            updateStatusStrip(latestState);
+        }
         WS.send('RESET', {});
     });
+    document.getElementById('btn-export').addEventListener('click', () => WS.send('EXPORT', {}));
 
-    document.getElementById('btn-export').addEventListener('click', () => {
-        WS.send('EXPORT', {});
-    });
-
-    // Speed slider
     const speedSlider = document.getElementById('speed-slider');
-    const speedVal = document.getElementById('speed-val');
     speedSlider.addEventListener('input', () => {
         const factor = parseFloat(speedSlider.value);
-        speedVal.textContent = factor.toFixed(1) + '×';
+        document.getElementById('speed-val').textContent = `${factor.toFixed(1)}x`;
         WS.send('SET_SPEED', { factor });
     });
 
-    // ---- Toast utility ----
-    function showToast(message, duration = 2500) {
-        const el = document.getElementById('toast');
-        el.textContent = message;
-        el.classList.remove('hidden');
-        clearTimeout(el._timer);
-        el._timer = setTimeout(() => el.classList.add('hidden'), duration);
-    }
-
-    // ---- Connect WebSocket ----
     WS.connect();
-
-    console.log('[FANET 3D Simulator] Initialized');
 })();
