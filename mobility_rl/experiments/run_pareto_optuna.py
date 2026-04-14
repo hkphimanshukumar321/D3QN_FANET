@@ -348,6 +348,7 @@ def create_objective(
                 "RUN_MARL_IQL": getattr(params, "RUN_MARL_IQL", True),
                 "RUN_MARL_VDN": getattr(params, "RUN_MARL_VDN", True),
                 "RUN_MARL_QMIX": getattr(params, "RUN_MARL_QMIX", True),
+                "RUN_MARL_MAPPO": getattr(params, "RUN_MARL_MAPPO", True),
                 "RUN_MARL_GNN": getattr(params, "RUN_MARL_GNN", True),
             }
 
@@ -359,6 +360,7 @@ def create_objective(
             params.RUN_MARL_IQL = (algo_cli == "iql")
             params.RUN_MARL_VDN = (algo_cli == "vdn")
             params.RUN_MARL_QMIX = (algo_cli == "qmix")
+            params.RUN_MARL_MAPPO = (algo_cli == "mappo")
             params.RUN_MARL_GNN = (algo_cli == "magat_d3qn")
 
             # Run the inner experiment
