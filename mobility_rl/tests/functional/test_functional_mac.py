@@ -165,6 +165,8 @@ def test_runtime_fallback_warning_surfaces_after_policy_failure(monkeypatch):
         "compatible": True,
         "compatibility_note": None,
     }
+    # Isolate test from real checkpoints that might exist in the user's filesystem
+    engine._policy_registry = [p for p in engine._policy_registry if not p["id"].startswith("checkpoint:")]
     engine._policy_registry.insert(0, failing_policy)
     engine._policy_map[failing_policy["id"]] = failing_policy
     engine.runtime["policy_id"] = failing_policy["id"]

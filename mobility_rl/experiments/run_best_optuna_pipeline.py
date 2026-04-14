@@ -30,6 +30,7 @@ ALGO_FLAG_MAP = {
     "iql": "RUN_MARL_IQL",
     "vdn": "RUN_MARL_VDN",
     "qmix": "RUN_MARL_QMIX",
+    "mappo": "RUN_MARL_MAPPO",
     "magat_d3qn": "RUN_MARL_GNN",
 }
 

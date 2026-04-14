@@ -4,7 +4,7 @@
 # ==========================================
 # Global Simulation & Node Parameters
 # ==========================================
-MAC_SELECTION = ["TDMA", "CSMA_CA", "TABULAR", "DQN", "PPO", "A2C", "MCA_D3QN", "MARL_GNN"]  # Protocols for RL evaluation
+MAC_SELECTION = ["TDMA", "CSMA_CA", "TABULAR", "DQN", "PPO", "A2C", "MCA_D3QN", "MARL_GNN", "MAPPO"]  # Protocols for RL evaluation
 N = 50                                   # Number of senders / nodes
 SIM_TIME_S = 15                               # Simulation duration (seconds)
 SLOT_TIME_S = 9e-6                            # Discrete time slot granularity
@@ -177,6 +177,7 @@ DECENTRALIZED_COMM = True  # If True, UAVs calculate pathloss to their closest p
 RUN_MARL_IQL = True
 RUN_MARL_VDN = True
 RUN_MARL_QMIX = True
+RUN_MARL_MAPPO = True
 
 # ==========================================
 # Results / Logging Controls

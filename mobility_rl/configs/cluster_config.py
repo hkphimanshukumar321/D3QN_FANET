@@ -22,12 +22,12 @@ class ClusterConfig:
     # Cluster size bounds (triggers split / merge)
     # --------------------------------------------------
     N_MIN = 2
-    N_MAX = 20
+    N_MAX = 12
 
     # --------------------------------------------------
     # Spatial radii (meters)
     # --------------------------------------------------
-    R_C = 150.0
+    R_C = 100.0
     R_I = 250.0
 
     # --------------------------------------------------
@@ -88,7 +88,7 @@ class ClusterConfig:
     RHO_ACTION_LEVELS = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
     DEFAULT_RHO = 0.5
     COORD_SYNC_MODE = "tail_aligned"
-    COORD_GUARD_TIME = 0.01
+    COORD_GUARD_TIME = 0.05
     INTRA_CLUSTER_PAYLOAD_TYPES = ("data", "control", "retransmission")
     INTER_CLUSTER_COORD_PAYLOAD_TYPES = (
         "schedule_exchange",

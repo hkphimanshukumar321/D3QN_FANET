@@ -73,7 +73,7 @@ from experiments.evidence_metrics import jain_fairness, pxx, runtime_per_cluster
 MAC_NAMES = {0: "TDMA", 1: "CSMA_CA"}
 
 SARL_ALGOS = ['tabular', 'dqn', 'ppo', 'a2c', 'mca_d3qn']
-MARL_ALGOS = ['iql', 'vdn', 'qmix', 'magat_d3qn']
+MARL_ALGOS = ['iql', 'vdn', 'qmix', 'magat_d3qn', 'mappo']
 
 # Canonical mapping: CLI/internal name → display name in CSVs and plots
 ALGO_NAME_MAP = {
@@ -85,6 +85,7 @@ ALGO_NAME_MAP = {
     "iql": "IQL",
     "vdn": "VDN",
     "qmix": "QMIX",
+    "mappo": "MAPPO",
     "magat_d3qn": "MAGAT-D3QN",
 }
 
@@ -349,6 +350,18 @@ def load_eval_models(cp_dir, log):
                 log("  Loaded MARL: QMIX")
             except Exception as exc:
                 log(f"  Skipping incompatible MARL checkpoint QMIX: {exc}")
+
+    if getattr(params, "RUN_MARL_MAPPO", True):
+        mappo_path = os.path.join(cp_dir, "unified_mappo_model.pth")
+        if os.path.exists(mappo_path):
+            try:
+                from algorithms.rl.mappo_agent import MAPPOAgent
+                agent = MAPPOAgent(n_agents, obs_dim, MARLConfig.NUM_ACTIONS)
+                agent.load(mappo_path)
+                models["MAPPO"] = ("marl", agent)
+                log("  Loaded MARL: MAPPO")
+            except Exception as exc:
+                log(f"  Skipping incompatible MARL checkpoint MAPPO: {exc}")
 
     if getattr(params, "RUN_MARL_GNN", True):
         gnn_path = os.path.join(cp_dir, "unified_gnn_marl_model.pth")
@@ -760,6 +773,12 @@ def _train_marl_worker(kwargs):
             return "QMIX skipped (checkpoint)"
         common['embed_dim'] = MARLConfig.QMIX_EMBED_DIM
         agent = QMIXAgent(**common)
+    elif algo == 'mappo':
+        from algorithms.rl.mappo_agent import MAPPOAgent
+        save_path = os.path.join(cp_dir, "unified_mappo_model.pth")
+        if (not force_retrain) and os.path.exists(save_path):
+            return "MAPPO skipped (checkpoint)"
+        agent = MAPPOAgent(n_agents=common['n_agents'], obs_dim=common['obs_dim'], num_actions=common['num_actions'], hidden_dim=common['hidden_dim'], lr=common['lr'], gamma=common['gamma'], batch_size=common['batch_size'], device=common['device'])
     else:
         return f"Unknown MARL algo: {algo}"
 
@@ -775,7 +794,12 @@ def _train_marl_worker(kwargs):
 
         while env.agents:
             global_step += 1
-            actions_list = agent.select_actions(obs_all, alive_mask=alive_mask)
+            if algo == 'mappo':
+                agent_out = agent.select_actions(obs_all, alive_mask=alive_mask, store=True)
+                actions_list = agent_out[0]
+            else:
+                actions_list = agent.select_actions(obs_all, alive_mask=alive_mask)
+                
             actions_dict = {a: actions_list[i] for i, a in enumerate(env.possible_agents)}
             next_obs_dict, rewards, terms, truncs, infos = env.step(actions_dict)
             next_obs_all = np.stack([next_obs_dict[a] for a in env.possible_agents])
@@ -785,7 +809,12 @@ def _train_marl_worker(kwargs):
                 dtype=np.bool_,
             )
             done = any(terms.values()) if terms else True
-            agent.store(obs_all, actions_list, reward_vec, next_obs_all, done, alive_mask=alive_mask)
+            
+            if algo == 'mappo':
+                actions_list, logprobs, val, global_obs = agent_out
+                agent.store(obs_all, global_obs, actions_list, logprobs, val, reward_vec, done, alive_mask=alive_mask)
+            else:
+                agent.store(obs_all, actions_list, reward_vec, next_obs_all, done, alive_mask=alive_mask)
             
             # OPTIMIZATION: Train only every 4 steps (train_freq=4) to drastically slash overhead
             if global_step % 4 == 0:
@@ -845,6 +874,7 @@ def step2_train(
     if getattr(params, "RUN_MARL_IQL", True): marl_tasks.append('iql')
     if getattr(params, "RUN_MARL_VDN", True): marl_tasks.append('vdn')
     if getattr(params, "RUN_MARL_QMIX", True): marl_tasks.append('qmix')
+    if getattr(params, "RUN_MARL_MAPPO", True): marl_tasks.append('mappo')
     if getattr(params, "RUN_MARL_GNN", True): marl_tasks.append('magat_d3qn')
 
     all_kwargs = []
