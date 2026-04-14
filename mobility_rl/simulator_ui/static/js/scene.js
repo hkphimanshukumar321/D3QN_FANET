@@ -11,6 +11,7 @@ const Scene = {
     membershipGroup: null,
     trueEdgeGroup: null,
     observedEdgeGroup: null,
+    resizeObserver: null,
     boxHelper: null,
     gridHelper: null,
     selectedClusterId: null,
@@ -57,6 +58,11 @@ const Scene = {
 
         this.renderer.domElement.addEventListener('click', (event) => this._handleClick(event));
         window.addEventListener('resize', () => this.onResize());
+        if (typeof ResizeObserver !== 'undefined') {
+            this.resizeObserver = new ResizeObserver(() => this.onResize());
+            this.resizeObserver.observe(container);
+        }
+        window.requestAnimationFrame(() => this.onResize());
         this.animate();
     },
 
@@ -145,17 +151,21 @@ const Scene = {
     },
 
     updateFromSnapshot(state) {
-        if (!state || !state.nodes) {
+        if (!state || !Array.isArray(state.nodes) || state.nodes.length === 0) {
             return;
         }
 
+        const bounds = Array.isArray(state.bounds) && state.bounds.length === 3
+            ? state.bounds
+            : [100, 100, 60];
+
         if (
             !this.bounds
-            || this.bounds[0] !== state.bounds[0]
-            || this.bounds[1] !== state.bounds[1]
-            || this.bounds[2] !== state.bounds[2]
+            || this.bounds[0] !== bounds[0]
+            || this.bounds[1] !== bounds[1]
+            || this.bounds[2] !== bounds[2]
         ) {
-            this.buildScene(state.bounds);
+            this.buildScene(bounds);
         }
 
         this._ensureNodes(state.nodes.length);
@@ -190,12 +200,12 @@ const Scene = {
             nodeById[node.id] = this._worldToScene(node.position);
         });
 
-        state.clusters.forEach((cluster) => {
+        (state.clusters || []).forEach((cluster) => {
             const leaderPos = nodeById[cluster.leader_id];
             if (!leaderPos) {
                 return;
             }
-            cluster.members.forEach((memberId) => {
+            (cluster.members || []).forEach((memberId) => {
                 if (memberId === cluster.leader_id) {
                     return;
                 }
@@ -217,11 +227,11 @@ const Scene = {
         });
 
         const leaderByCluster = {};
-        state.clusters.forEach((cluster) => {
+        (state.clusters || []).forEach((cluster) => {
             leaderByCluster[cluster.cluster_id] = nodeById[cluster.leader_id];
         });
 
-        state.graphs.true_edges.forEach((edge) => {
+        ((state.graphs && state.graphs.true_edges) || []).forEach((edge) => {
             const source = leaderByCluster[edge.source];
             const target = leaderByCluster[edge.target];
             if (!source || !target) {
@@ -239,7 +249,7 @@ const Scene = {
             );
         });
 
-        state.graphs.observed_edges.forEach((edge) => {
+        ((state.graphs && state.graphs.observed_edges) || []).forEach((edge) => {
             const source = leaderByCluster[edge.source];
             const target = leaderByCluster[edge.target];
             if (!source || !target) {
@@ -288,9 +298,12 @@ const Scene = {
     },
 
     onResize() {
+        if (!this.renderer || !this.camera) {
+            return;
+        }
         const container = document.getElementById('viewport');
-        const width = container.clientWidth;
-        const height = container.clientHeight;
+        const width = Math.max(container.clientWidth || 0, 1);
+        const height = Math.max(container.clientHeight || 0, 1);
         this.camera.aspect = width / Math.max(height, 1);
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(width, height);

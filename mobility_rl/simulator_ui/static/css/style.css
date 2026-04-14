@@ -186,11 +186,13 @@ button {
 #dashboard-layout {
     display: grid;
     grid-template-columns: minmax(0, 1fr) var(--rail-width);
+    height: 100%;
     min-height: 0;
 }
 
 #scene-column {
     min-width: 0;
+    height: 100%;
     min-height: 0;
 }
 

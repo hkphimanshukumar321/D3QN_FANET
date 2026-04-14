@@ -40,7 +40,8 @@
 
         const selectedCluster = clusters.find(cluster => cluster.cluster_id === Panels.selectedClusterId) || clusters[0];
         const nodeExists = nodes.some(node => node.id === Panels.selectedNodeId);
-        const nodeInsideCluster = selectedCluster.members.includes(Panels.selectedNodeId);
+        const nodeInsideCluster = Array.isArray(selectedCluster.members)
+            && selectedCluster.members.includes(Panels.selectedNodeId);
         if (!nodeExists || !nodeInsideCluster) {
             Panels.selectedNodeId = selectedCluster.leader_id;
         }

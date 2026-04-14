@@ -2,14 +2,15 @@
 
 ## Live Simulator UI
 
-`simulator_ui` now runs the decentralized cluster-head environment in `envs/marl_mac_env.py`.
+`simulator_ui` is now a research-operations dashboard for the decentralized cluster-head environment in `envs/marl_mac_env.py`, not the older sink-centric simulator.
 
-- The browser visualizes live UAV membership, cluster leaders, member-to-leader links, and true vs observed interference edges.
-- The UI uses named presets drawn from the generalization, robustness, and failure-recovery study suites instead of the old sink-centric controls.
-- Runtime action selection is policy-driven. It prefers available MARL checkpoints such as `MAGAT-D3QN` and falls back to fixed baselines like `All TDMA (mid rho)`.
+- The main scene shows live UAV membership, cluster leaders, member-to-leader links, and the true vs observed cluster graph.
+- The right rail exposes runtime truth, base config, and advanced environment controls for study impairments such as graph corruption, staleness, mobility, traffic profile, and failure schedules.
+- Presets are grouped by study block: `Default`, `Generalization`, `Robustness`, and `Failure/Recovery`.
+- Runtime action selection is policy-driven. The UI surfaces policy compatibility and fallback truth explicitly; if a checkpoint is incompatible or fails, the dashboard shows the replacement baseline instead of implying the original model is still active.
 - UI exports are decentralized artifacts: `mobility_positions.csv`, `cluster_step_records.csv`, `cluster_graph_edges.csv`, and `node_cluster_membership.csv`.
 
-Older README sections still describe the historical many-to-one simulator and baseline study setup. Treat the `simulator_ui` behavior and export format as defined by the current code in `simulator_ui/`.
+Older README sections below still describe historical many-to-one and baseline workflows. For `simulator_ui`, treat the behavior, payload schema, and export format in `simulator_ui/` as the current source of truth.
 
 This repository provides a rigorous, generic, and mathematically unbiased simulation environment for comparing multiple Medium Access Control (MAC) protocols, currently strictly validating **Slotted ALOHA**, **Round-robin TDMA**, and **CSMA/CA (802.11 DCF-style)**.
 

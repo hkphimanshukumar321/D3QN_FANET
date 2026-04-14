@@ -511,7 +511,8 @@ class MARLMacEnv(ParallelEnv):
         )
 
     def step(self, actions):
-        self.mobility_model.update(params.MOBILITY_DT)
+        # One MARL step corresponds to one burst, so mobility should advance by burst time.
+        self.mobility_model.update(CC.BURST_TOTAL_TIME)
         pos = self.mobility_model.positions
         vel = self.mobility_model.velocities
 
