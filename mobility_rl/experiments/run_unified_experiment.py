@@ -515,6 +515,11 @@ def _train_sarl_worker(kwargs):
     from envs.sarl_central_env import SARLCentralEnv
     from utils.device_manager import resolve_device
     from utils.experiment_tracking import WandbMARLLogger
+    
+    from configs.sarl_config import RLConfig
+    sarl_state = kwargs.get('sarl_state', {})
+    for k, v in sarl_state.items():
+        setattr(RLConfig, k, v)
 
     pid = os.getpid()
     train_device = resolve_device("train")
@@ -621,6 +626,10 @@ def _train_marl_worker(kwargs):
     from configs import config as params
     from utils.device_manager import resolve_device
     from utils.experiment_tracking import WandbMARLLogger
+    
+    marl_state = kwargs.get('marl_state', {})
+    for k, v in marl_state.items():
+        setattr(MARLConfig, k, v)
 
     pid = os.getpid()
     train_device = resolve_device("train")
@@ -877,18 +886,23 @@ def step2_train(
     if getattr(params, "RUN_MARL_MAPPO", True): marl_tasks.append('mappo')
     if getattr(params, "RUN_MARL_GNN", True): marl_tasks.append('magat_d3qn')
 
+    sarl_state = {k: getattr(RLConfig, k) for k in dir(RLConfig) if not k.startswith("__")}
+    marl_state = {k: getattr(MARLConfig, k) for k in dir(MARLConfig) if not k.startswith("__")}
+    
     all_kwargs = []
     for algo in sarl_tasks:
         all_kwargs.append({
             'type': 'sarl', 'algo': algo, 'timesteps': sarl_timesteps,
             'cp_dir': cp_dir, 'csv_dir': csv_dir, 'seed': params.SEED,
             'force_retrain': force_retrain,
+            'sarl_state': sarl_state,
         })
     for algo in marl_tasks:
         all_kwargs.append({
             'type': 'marl', 'algo': algo, 'episodes': marl_episodes,
             'cp_dir': cp_dir, 'csv_dir': csv_dir, 'seed': params.SEED,
             'force_retrain': force_retrain,
+            'marl_state': marl_state,
         })
 
     n_workers = min(os.cpu_count() or 1, len(all_kwargs))
