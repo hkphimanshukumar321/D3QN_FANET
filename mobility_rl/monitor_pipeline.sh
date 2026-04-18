@@ -148,7 +148,11 @@ run_once() {
     echo "=== Optuna Study Estimates ==="
     if [[ -f "utils/monitor_optuna_eta.py" ]]; then
         # Run it but filter out older dead studies if we want to reduce confusion
-        python utils/monitor_optuna_eta.py . | grep -v "COMPLETED" || true
+        if [[ -n "${N_TRIALS:-}" ]]; then
+            python utils/monitor_optuna_eta.py . --force-target "$N_TRIALS" | grep -v "COMPLETED" || true
+        else
+            python utils/monitor_optuna_eta.py . --force-target 24 | grep -v "COMPLETED" || true
+        fi
         # Always show COMPLETED explicitly if pipeline handles it nicely
         echo " (Any algorithm not listed here has successfully finished tuning)"
     fi

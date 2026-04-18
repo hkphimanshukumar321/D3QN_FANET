@@ -8,6 +8,7 @@ import optuna
 def main():
     parser = argparse.ArgumentParser("Monitor Optuna ETA")
     parser.add_argument("pipeline_root", type=str)
+    parser.add_argument("--force-target", type=int, default=None, help="Override target trials")
     args = parser.parse_args()
 
     pipeline_root = args.pipeline_root
@@ -40,7 +41,9 @@ def main():
         
         study_name = data.get("study_name")
         target = data.get("target_complete_trials")
-        
+        if args.force_target is not None:
+            target = args.force_target
+            
         if not study_name or target is None:
             continue
         
@@ -81,7 +84,9 @@ def main():
             eta_str = "COMPLETED"
         else:
             eta_delta = datetime.timedelta(seconds=int(eta_seconds))
-            eta_str = f"ETA: {eta_delta} ({len(running)} workers)"
+            # Just say DEAD if we know they aren't actually running
+            worker_str = f"({len(running)} workers)" if len(running) > 0 else "(no active workers)"
+            eta_str = f"ETA: {eta_delta} {worker_str}"
         
         fail_str = f" | {num_failed} FAILED" if num_failed > 0 else ""
         print(f"  {study_name:<30} | {num_complete:>2}/{target:<2} trials | Avg: {avg_duration:5.1f}s | {eta_str}{fail_str}")
