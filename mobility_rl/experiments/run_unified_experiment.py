@@ -1028,8 +1028,8 @@ def step3_evaluate(
                     dtype=np.bool_,
                 )
 
-                if deterministic_eval:
-                    model.steps_done = model.eps_decay * 10  # force greedy
+                if deterministic_eval and hasattr(model, "eps_decay"):
+                    model.steps_done = getattr(model, "eps_decay") * 10  # force greedy
                 while marl_env.agents:
                     t0 = time.perf_counter()
                     actions_list = model.select_actions(obs_all, alive_mask=alive_mask)
