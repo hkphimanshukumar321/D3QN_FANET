@@ -75,6 +75,18 @@ BASE_PARAM_KEYS = (
     "NAKAGAMI_OMEGA",
     "RICIAN_K",
     "MODULATION",
+    "W_DIST",
+    "W_SINR",
+    "W_MOB",
+    "W_LOAD",
+    "THETA_JOIN",
+    "THETA_LEAVE",
+    "HEALTH_THRESHOLD",
+    "A_ENERGY",
+    "A_DEGREE",
+    "A_MOBSTAB",
+    "A_QUEUE",
+    "A_RISK",
 )
 
 ENV_OPTION_KEYS = (
@@ -124,6 +136,18 @@ FLOAT_BASE_PARAMS = {
     "NAKAGAMI_M",
     "NAKAGAMI_OMEGA",
     "RICIAN_K",
+    "W_DIST",
+    "W_SINR",
+    "W_MOB",
+    "W_LOAD",
+    "THETA_JOIN",
+    "THETA_LEAVE",
+    "HEALTH_THRESHOLD",
+    "A_ENERGY",
+    "A_DEGREE",
+    "A_MOBSTAB",
+    "A_QUEUE",
+    "A_RISK",
 }
 
 INT_BASE_PARAMS = set(BASE_PARAM_KEYS) - FLOAT_BASE_PARAMS - BOOLEAN_BASE_PARAMS - {
@@ -179,6 +203,18 @@ DISPLAY_LABELS = {
     "coordination_capacity_scale": "Coordination capacity",
     "use_burst_history": "Burst history",
     "failure_schedule": "Failure schedule",
+    "W_DIST": "Weight: Dist",
+    "W_SINR": "Weight: SINR",
+    "W_MOB": "Weight: Mobility",
+    "W_LOAD": "Weight: Load",
+    "THETA_JOIN": "Join Thresh",
+    "THETA_LEAVE": "Leave Thresh",
+    "HEALTH_THRESHOLD": "Health Thresh",
+    "A_ENERGY": "Health: Energy",
+    "A_DEGREE": "Health: Degree",
+    "A_MOBSTAB": "Health: Mobility",
+    "A_QUEUE": "Health: Queue",
+    "A_RISK": "Health: Risk",
 }
 
 GROUP_LABELS = {
@@ -246,11 +282,12 @@ def _ensure_max_steps_default() -> None:
 
 _ensure_max_steps_default()
 
-DEFAULT_BASE_PARAMS = {
-    key: copy.deepcopy(getattr(params, key))
-    for key in BASE_PARAM_KEYS
-    if hasattr(params, key)
-}
+DEFAULT_BASE_PARAMS: dict[str, Any] = {}
+for key in BASE_PARAM_KEYS:
+    if hasattr(params, key):
+        DEFAULT_BASE_PARAMS[key] = copy.deepcopy(getattr(params, key))
+    elif hasattr(CC, key):
+        DEFAULT_BASE_PARAMS[key] = copy.deepcopy(getattr(CC, key))
 
 
 def _scenario_id(group: str, name: str) -> str:
@@ -413,6 +450,18 @@ def _build_base_param_schema() -> list[dict[str, Any]]:
         {"key": "AREA_Y", "label": "Area Y", "type": "number", "min": 10, "step": 10},
         {"key": "AREA_Z", "label": "Area Z", "type": "number", "min": 10, "step": 5},
         {"key": "OFFERED_PPS", "label": "Load pps", "type": "number", "min": 1, "step": 10},
+        {"key": "W_DIST", "label": "Weight: Dist", "type": "number", "step": 0.05},
+        {"key": "W_SINR", "label": "Weight: SINR", "type": "number", "step": 0.05},
+        {"key": "W_MOB", "label": "Weight: Mobility", "type": "number", "step": 0.05},
+        {"key": "W_LOAD", "label": "Weight: Load", "type": "number", "step": 0.05},
+        {"key": "THETA_JOIN", "label": "Join Thresh", "type": "number", "step": 0.05},
+        {"key": "THETA_LEAVE", "label": "Leave Thresh", "type": "number", "step": 0.05},
+        {"key": "HEALTH_THRESHOLD", "label": "Health Thresh", "type": "number", "step": 0.05},
+        {"key": "A_ENERGY", "label": "Health: Energy", "type": "number", "step": 0.05},
+        {"key": "A_DEGREE", "label": "Health: Degree", "type": "number", "step": 0.05},
+        {"key": "A_MOBSTAB", "label": "Health: Mobility", "type": "number", "step": 0.05},
+        {"key": "A_QUEUE", "label": "Health: Queue", "type": "number", "step": 0.05},
+        {"key": "A_RISK", "label": "Health: Risk", "type": "number", "step": 0.05},
     ]
 
 
@@ -914,7 +963,10 @@ class SimulationEngine:
     def _apply_effective_params_to_globals(self) -> None:
         effective = self._effective_base_params()
         for key, value in effective.items():
-            setattr(params, key, value)
+            if hasattr(params, key):
+                setattr(params, key, value)
+            if hasattr(CC, key):
+                setattr(CC, key, value)
 
         if "MAX_STEPS_PER_EP" in effective:
             params.MAX_STEPS_PER_EP = int(effective["MAX_STEPS_PER_EP"])

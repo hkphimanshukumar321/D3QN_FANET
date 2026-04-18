@@ -144,6 +144,26 @@
                                 <input type="number" data-base-key="OFFERED_PPS" min="1" step="10">
                             </label>
                         </div>
+                        <hr class="panel-divider" style="margin: 1.5rem 0; border: 0; border-top: 1px solid var(--border-subtle);">
+                        <div style="font-weight: 500; margin-bottom: 0.5rem; color: var(--text-muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em;">Cluster Scoring & Thresholds</div>
+                        <div class="compact-grid">
+                            <label class="field-stack"><span>W. Dist</span><input type="number" data-base-key="W_DIST" step="0.05"></label>
+                            <label class="field-stack"><span>W. SINR</span><input type="number" data-base-key="W_SINR" step="0.05"></label>
+                            <label class="field-stack"><span>W. Mob</span><input type="number" data-base-key="W_MOB" step="0.05"></label>
+                            <label class="field-stack"><span>W. Load</span><input type="number" data-base-key="W_LOAD" step="0.05"></label>
+                            <label class="field-stack"><span>Join Thresh</span><input type="number" data-base-key="THETA_JOIN" step="0.05"></label>
+                            <label class="field-stack"><span>Leave Thresh</span><input type="number" data-base-key="THETA_LEAVE" step="0.05"></label>
+                        </div>
+                        <hr class="panel-divider" style="margin: 1.5rem 0; border: 0; border-top: 1px solid var(--border-subtle);">
+                        <div style="font-weight: 500; margin-bottom: 0.5rem; color: var(--text-muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em;">Leader Health Inputs</div>
+                        <div class="compact-grid">
+                            <label class="field-stack"><span>Health Thresh</span><input type="number" data-base-key="HEALTH_THRESHOLD" step="0.05"></label>
+                            <label class="field-stack"><span>A. Energy</span><input type="number" data-base-key="A_ENERGY" step="0.05"></label>
+                            <label class="field-stack"><span>A. Degree</span><input type="number" data-base-key="A_DEGREE" step="0.05"></label>
+                            <label class="field-stack"><span>A. MobStab</span><input type="number" data-base-key="A_MOBSTAB" step="0.05"></label>
+                            <label class="field-stack"><span>A. Queue</span><input type="number" data-base-key="A_QUEUE" step="0.05"></label>
+                            <label class="field-stack"><span>A. Risk</span><input type="number" data-base-key="A_RISK" step="0.05"></label>
+                        </div>
                     </div>
                 </section>
 
