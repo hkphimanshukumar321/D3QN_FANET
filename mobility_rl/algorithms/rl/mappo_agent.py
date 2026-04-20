@@ -191,6 +191,11 @@ class MAPPOAgent:
             advantages[step] = gae
             returns[step] = gae + values_batch[step]
 
+        # NaN guard: if advantages or returns contain NaN, skip update
+        if torch.isnan(advantages).any() or torch.isnan(returns).any():
+            self.reset_buffer()
+            return 0.0
+
         # Flatten the tensors for batch updates
         # Critic uses Team aspects (flatten T only)
         # Actor uses individual agent aspects (flatten T*N)
@@ -263,6 +268,10 @@ class MAPPOAgent:
                     
                     loss = actor_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy
                 
+                # NaN guard: skip this minibatch if loss is NaN
+                if torch.isnan(loss) or torch.isinf(loss):
+                    continue
+
                 self.optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(list(self.actor.parameters()) + list(self.critic.parameters()), max_norm=0.5)

@@ -825,13 +825,19 @@ def _train_marl_worker(kwargs):
             else:
                 agent.store(obs_all, actions_list, reward_vec, next_obs_all, done, alive_mask=alive_mask)
             
-            # OPTIMIZATION: Train only every 4 steps (train_freq=4) to drastically slash overhead
-            if global_step % 4 == 0:
+            # OPTIMIZATION: Train only every 4 steps for off-policy agents.
+            # MAPPO is on-policy (PPO): it needs full episode rollouts for GAE,
+            # so update only at episode end — never mid-episode.
+            if algo != 'mappo' and global_step % 4 == 0:
                 agent.update()
                 
             obs_all = next_obs_all
             alive_mask = next_alive_mask
             ep_reward += float(np.sum(reward_vec))
+
+        # MAPPO on-policy update: train on the full episode rollout
+        if algo == 'mappo':
+            agent.update()
 
         ep_rewards.append(ep_reward)
         wb_logger.log_episode(ep, reward=ep_reward, epsilon=agent.get_epsilon())
@@ -974,6 +980,7 @@ def step3_evaluate(
             total_inf_time = 0.0
             inf_times_ms = []
             inf_steps = 0
+            eval_had_nan = False
             step_cluster_throughputs = []
             comm_overheads = []
             current_reset_options = dict(env_reset_options or {})
@@ -1114,6 +1121,16 @@ def step3_evaluate(
             flat_cluster_thr = [thr for thr_list in step_cluster_throughputs for thr in thr_list]
             fairness = jain_fairness(flat_cluster_thr)
             avg_active_clusters = float(np.mean([len(thr_list) for thr_list in step_cluster_throughputs])) if step_cluster_throughputs else 0.0
+
+            # NaN guard: if any key metric is NaN (e.g. from a corrupted model),
+            # clamp to zero so Optuna can still record a valid (poor) result.
+            for _val_name, _val in [("avg_thr", avg_thr), ("avg_delay", avg_delay)]:
+                if np.isnan(_val) or np.isinf(_val):
+                    eval_had_nan = True
+                    log(f"  WARNING: {model_name} produced NaN/Inf in {_val_name} at pps={pps}. Clamping to 0.")
+            if eval_had_nan:
+                avg_thr = 0.0 if np.isnan(avg_thr) or np.isinf(avg_thr) else avg_thr
+                avg_delay = 0.0 if np.isnan(avg_delay) or np.isinf(avg_delay) else avg_delay
 
             results.append({
                 'Model': model_name,
