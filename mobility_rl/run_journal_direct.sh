@@ -123,18 +123,19 @@ for sarl_pattern in "sarl_dqn_model.zip" "sarl_ppo_model.zip" "sarl_a2c_model.zi
     fi
 done
 
-# Copy any training reward CSVs for reference
-for csv_file in $(find "$SEARCH_ROOT" -name "*_training_rewards.csv" -printf '%T@ %p\n' 2>/dev/null | sort -rn); do
-    fname=$(echo "$csv_file" | awk '{print $2}')
-    base=$(basename "$fname")
+# Copy any training reward CSVs for reference (one per algo, newest wins)
+find "$SEARCH_ROOT" -name "*_training_rewards.csv" -printf '%T@ %p\n' 2>/dev/null \
+  | sort -rn | while IFS=' ' read -r _ts fpath; do
+    [ -z "$fpath" ] && continue
+    base=$(basename "$fpath")
     if [[ ! -f "$COMBINED_DIR/$base" ]]; then
-        cp "$fname" "$COMBINED_DIR/"
+        cp "$fpath" "$COMBINED_DIR/" 2>/dev/null || true
     fi
 done
 
 echo ""
 echo "Assembled $FOUND_COUNT model files:"
-ls -lh "$COMBINED_DIR/"*.pth "$COMBINED_DIR/"*.zip 2>/dev/null || true
+ls -lh "$COMBINED_DIR/" 2>/dev/null || true
 echo ""
 
 if [[ "$FOUND_COUNT" -lt 2 ]]; then
