@@ -190,3 +190,25 @@ alternate_tj_latex_template_ap/
 # Large data files
 cluster_step_records.csv
 *.db
+
+# Large binary / media files
+*.gif
+*.mp4
+*.webm
+*.avi
+*.pth
+*.zip
+*.tar.gz
+*.h5
+*.hdf5
+*.onnx
+*.pkl
+
+# Pipeline runtime outputs
+results/
+logs/
+nohup.out
+*.pid
+
+# Optuna
+*.db-journal
