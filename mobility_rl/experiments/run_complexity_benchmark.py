@@ -21,7 +21,7 @@ from configs.cluster_config import ClusterConfig as CC
 from configs.marl_config import MARLConfig
 from envs.sarl_central_env import SARLCentralEnv
 from experiments.evidence_metrics import model_memory_mb, parameter_count
-from experiments.run_unified_experiment import get_magat_arch_kwargs, infer_magat_arch_from_checkpoint, step3_evaluate
+from experiments.run_unified_experiment import get_magat_arch_kwargs, infer_magat_arch_from_checkpoint, infer_baseline_arch_from_checkpoint, step3_evaluate
 
 
 def collect_model_stats(cp_dir: str):
@@ -75,7 +75,10 @@ def collect_model_stats(cp_dir: str):
         path = os.path.join(cp_dir, fname)
         if os.path.exists(path):
             try:
-                agent = cls(CC.C_MAX, MARLConfig.OBS_DIM, MARLConfig.NUM_ACTIONS)
+                arch = infer_baseline_arch_from_checkpoint(path)
+                h_dim = arch["hidden_dim"] if arch else MARLConfig.HIDDEN_DIM
+                n_act = arch["num_actions"] if arch else MARLConfig.NUM_ACTIONS
+                agent = cls(CC.C_MAX, MARLConfig.OBS_DIM, n_act, hidden_dim=h_dim)
                 agent.load(path)
                 append_row(name, agent.q_net)
             except Exception:
@@ -84,7 +87,10 @@ def collect_model_stats(cp_dir: str):
     qmix_path = os.path.join(cp_dir, "unified_qmix_model.pth")
     if os.path.exists(qmix_path):
         try:
-            agent = QMIXAgent(CC.C_MAX, MARLConfig.OBS_DIM, MARLConfig.NUM_ACTIONS, embed_dim=MARLConfig.QMIX_EMBED_DIM)
+            arch = infer_baseline_arch_from_checkpoint(qmix_path)
+            h_dim = arch["hidden_dim"] if arch else MARLConfig.HIDDEN_DIM
+            n_act = arch["num_actions"] if arch else MARLConfig.NUM_ACTIONS
+            agent = QMIXAgent(CC.C_MAX, MARLConfig.OBS_DIM, n_act, hidden_dim=h_dim, embed_dim=MARLConfig.QMIX_EMBED_DIM)
             agent.load(qmix_path)
             append_row("QMIX-QNet", agent.q_net)
             append_row("QMIX-Mixer", agent.mixer)

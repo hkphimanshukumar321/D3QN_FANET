@@ -241,6 +241,51 @@ def infer_magat_arch_from_checkpoint(checkpoint_path):
     }
 
 
+def infer_baseline_arch_from_checkpoint(checkpoint_path):
+    """Infer AgentQNetwork / MAPPO architecture params from checkpoint shapes.
+
+    Works for IQL, VDN (bare state_dict), QMIX ({"q_net": ..., "mixer": ...}),
+    and MAPPO ({"actor": ..., "critic": ...}).
+
+    Returns dict with keys (obs_dim, hidden_dim, num_actions) or None.
+    """
+    import torch as _torch
+    try:
+        raw = _torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    except Exception:
+        raw = _torch.load(checkpoint_path, map_location="cpu")
+
+    if not isinstance(raw, dict):
+        return None
+
+    # Determine which sub-dict holds the q_net / actor weights
+    if "q_net" in raw and isinstance(raw["q_net"], dict):
+        # QMIX checkpoint: {"q_net": state_dict, "mixer": state_dict}
+        sd = raw["q_net"]
+    elif "actor" in raw and isinstance(raw["actor"], dict):
+        # MAPPO checkpoint: {"actor": state_dict, "critic": state_dict}
+        sd = raw["actor"]
+    elif "net.0.weight" in raw:
+        # IQL / VDN: bare AgentQNetwork state_dict
+        sd = raw
+    else:
+        return None
+
+    # AgentQNetwork / SharedActorNetwork layout:
+    #   net.0.weight: [hidden_dim, obs_dim]
+    #   net.2.weight: [hidden_dim, hidden_dim]
+    #   net.4.weight: [num_actions, hidden_dim]
+    w0 = sd.get("net.0.weight")
+    w4 = sd.get("net.4.weight")
+    if w0 is None or w4 is None:
+        return None
+
+    hidden_dim = int(w0.shape[0])
+    obs_dim = int(w0.shape[1])
+    num_actions = int(w4.shape[0])
+    return {"obs_dim": obs_dim, "hidden_dim": hidden_dim, "num_actions": num_actions}
+
+
 def aggregate_cluster_infos(raw_infos):
     """Aggregate per-cluster info dicts into burst-level metrics."""
     if not raw_infos:
@@ -386,7 +431,12 @@ def load_eval_models(cp_dir, log):
         path = os.path.join(cp_dir, fname)
         if os.path.exists(path):
             try:
-                agent = cls(n_agents, obs_dim, MARLConfig.NUM_ACTIONS)
+                # Infer hidden_dim from checkpoint to avoid Optuna mismatch
+                arch = infer_baseline_arch_from_checkpoint(path)
+                h_dim = arch["hidden_dim"] if arch else MARLConfig.HIDDEN_DIM
+                n_act = arch["num_actions"] if arch else MARLConfig.NUM_ACTIONS
+                log(f"  {name} arch: hidden_dim={h_dim}, num_actions={n_act}")
+                agent = cls(n_agents, obs_dim, n_act, hidden_dim=h_dim)
                 agent.load(path)
                 models[name] = ("marl", agent)
                 log(f"  Loaded MARL: {name}")
@@ -397,7 +447,12 @@ def load_eval_models(cp_dir, log):
         qmix_path = os.path.join(cp_dir, "unified_qmix_model.pth")
         if os.path.exists(qmix_path):
             try:
-                agent = QMIXAgent(n_agents, obs_dim, MARLConfig.NUM_ACTIONS, embed_dim=MARLConfig.QMIX_EMBED_DIM)
+                # Infer hidden_dim from checkpoint to avoid Optuna mismatch
+                arch = infer_baseline_arch_from_checkpoint(qmix_path)
+                h_dim = arch["hidden_dim"] if arch else MARLConfig.HIDDEN_DIM
+                n_act = arch["num_actions"] if arch else MARLConfig.NUM_ACTIONS
+                log(f"  QMIX arch: hidden_dim={h_dim}, num_actions={n_act}")
+                agent = QMIXAgent(n_agents, obs_dim, n_act, hidden_dim=h_dim, embed_dim=MARLConfig.QMIX_EMBED_DIM)
                 agent.load(qmix_path)
                 models["QMIX"] = ("marl", agent)
                 log("  Loaded MARL: QMIX")
@@ -409,7 +464,12 @@ def load_eval_models(cp_dir, log):
         if os.path.exists(mappo_path):
             try:
                 from algorithms.rl.mappo_agent import MAPPOAgent
-                agent = MAPPOAgent(n_agents, obs_dim, MARLConfig.NUM_ACTIONS)
+                # Infer hidden_dim from checkpoint to avoid Optuna mismatch
+                arch = infer_baseline_arch_from_checkpoint(mappo_path)
+                h_dim = arch["hidden_dim"] if arch else MARLConfig.HIDDEN_DIM
+                n_act = arch["num_actions"] if arch else MARLConfig.NUM_ACTIONS
+                log(f"  MAPPO arch: hidden_dim={h_dim}, num_actions={n_act}")
+                agent = MAPPOAgent(n_agents, obs_dim, n_act, hidden_dim=h_dim)
                 agent.load(mappo_path)
                 models["MAPPO"] = ("marl", agent)
                 log("  Loaded MARL: MAPPO")
