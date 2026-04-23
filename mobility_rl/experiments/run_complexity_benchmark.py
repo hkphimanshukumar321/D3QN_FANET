@@ -21,7 +21,7 @@ from configs.cluster_config import ClusterConfig as CC
 from configs.marl_config import MARLConfig
 from envs.sarl_central_env import SARLCentralEnv
 from experiments.evidence_metrics import model_memory_mb, parameter_count
-from experiments.run_unified_experiment import get_magat_arch_kwargs, step3_evaluate
+from experiments.run_unified_experiment import get_magat_arch_kwargs, infer_magat_arch_from_checkpoint, step3_evaluate
 
 
 def collect_model_stats(cp_dir: str):
@@ -99,7 +99,9 @@ def collect_model_stats(cp_dir: str):
             if isinstance(model, dict):
                 from algorithms.rl.gnn_marl import MAGAT_D3QN_QNetwork
 
-                gnn = MAGAT_D3QN_QNetwork(**get_magat_arch_kwargs())
+                inferred_kwargs = infer_magat_arch_from_checkpoint(gnn_path)
+                magat_kwargs = inferred_kwargs if inferred_kwargs is not None else get_magat_arch_kwargs()
+                gnn = MAGAT_D3QN_QNetwork(**magat_kwargs)
                 gnn.load_state_dict(model)
             if gnn is not None:
                 append_row("MAGAT-D3QN", gnn)

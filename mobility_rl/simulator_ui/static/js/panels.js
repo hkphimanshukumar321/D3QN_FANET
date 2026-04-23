@@ -376,7 +376,13 @@ const Panels = {
         clusters.forEach((cluster) => {
             const item = document.createElement('button');
             item.type = 'button';
-            item.className = `cluster-item${selectedClusterId === cluster.cluster_id ? ' selected' : ''}`;
+            let extraClass = selectedClusterId === cluster.cluster_id ? ' selected' : '';
+            if (cluster.failure_flag) {
+                extraClass += ' failure-pulse';
+            } else if (cluster.handover_flag) {
+                extraClass += ' handover-pulse';
+            }
+            item.className = `cluster-item${extraClass}`;
             item.innerHTML = `
                 <div class="cluster-item-title">
                     <span>Cluster ${cluster.cluster_id}</span>
@@ -432,7 +438,7 @@ const Panels = {
                     <div class="metric-cell"><span class="cell-label">Local / Inter Backlog</span><span class="cell-value">${fmtNumber(cluster.local_backlog, 2)} / ${fmtNumber(cluster.inter_backlog, 2)}</span></div>
                     <div class="metric-cell"><span class="cell-label">Graph Degree</span><span class="cell-value">${cluster.graph_degree}</span></div>
                     <div class="metric-cell"><span class="cell-label">Coord Success</span><span class="cell-value">${fmtNumber(cluster.recent_coord_success, 2)}</span></div>
-                    <div class="metric-cell"><span class="cell-label">Handover / Failure</span><span class="cell-value">${cluster.handover_flag ? 'yes' : 'no'} / ${cluster.failure_flag ? 'yes' : 'no'}</span></div>
+                    <div class="metric-cell"><span class="cell-label">Handover / Failure</span><span class="cell-value">${cluster.handover_flag ? '<span class="event-tag handover">HANDOVER</span>' : 'no'} / ${cluster.failure_flag ? '<span class="event-tag failure">FAILURE</span>' : 'no'}</span></div>
                 </div>
                 <div class="meta-grid">
                     <div class="meta-cell"><span class="cell-label">Health Score</span><span class="cell-value">${fmtNumber(cluster.leader_health, 3)}</span></div>
@@ -515,15 +521,18 @@ const Panels = {
         }
 
         target.className = 'event-feed';
-        target.innerHTML = this.eventFeed.map((event) => `
+        target.innerHTML = this.eventFeed.map((event) => {
+            const badge = this._eventBadge(event.kind);
+            return `
             <div class="event-item ${escapeHtml(event.severity || 'info')}">
                 <div class="event-head">
-                    <span>${escapeHtml(event.kind || 'event')}</span>
+                    <span>${badge}${escapeHtml(event.kind || 'event')}</span>
                     <span>t=${fmtNumber(event.sim_time || 0, 2)} | tick ${event.tick}</span>
                 </div>
                 <div class="event-text">${escapeHtml(event.message || '')}</div>
             </div>
-        `).join('');
+        `;
+        }).join('');
     },
 
     resetEventFeed() {
@@ -563,5 +572,18 @@ const Panels = {
         if (mode === 'live' && typeof Charts !== 'undefined' && typeof Charts.resizeAll === 'function') {
             window.setTimeout(() => Charts.resizeAll(), 0);
         }
+    },
+
+    _eventBadge(kind) {
+        const map = {
+            reassociation: '<span class="event-badge">🔄</span>',
+            deassociation: '<span class="event-badge">⛔</span>',
+            handover: '<span class="event-badge">⚡</span>',
+            failure: '<span class="event-badge">💥</span>',
+            split: '<span class="event-badge">🔀</span>',
+            merge: '<span class="event-badge">🔗</span>',
+            leader_change: '<span class="event-badge">⚡</span>',
+        };
+        return map[kind] || '';
     },
 };

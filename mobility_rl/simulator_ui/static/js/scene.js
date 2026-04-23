@@ -11,15 +11,20 @@ const Scene = {
     membershipGroup: null,
     trueEdgeGroup: null,
     observedEdgeGroup: null,
+    eventGroup: null,
     resizeObserver: null,
     boxHelper: null,
     gridHelper: null,
     selectedClusterId: null,
     selectedNodeId: null,
     onNodeSelected: null,
+    driftOffset: 0,
+    /* track events for visual indicators */
+    _eventRings: [],
+    _flashNodes: {},
     palette: [
-        0x4ed8ff, 0xff8b5c, 0xffcc66, 0x71e09c, 0xc78cff,
-        0xf56f9c, 0x87ceeb, 0xff6b6b, 0x9ee07a, 0x8fb3ff,
+        0x0066CC, 0xE65100, 0xD4A017, 0x2E8B57, 0x7B1FA2,
+        0xC62828, 0x00838F, 0xAD1457, 0x558B2F, 0x1565C0,
     ],
 
     init() {
@@ -29,7 +34,7 @@ const Scene = {
         this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
         this.renderer.setPixelRatio(window.devicePixelRatio);
         this.renderer.setSize(container.clientWidth, container.clientHeight);
-        this.renderer.setClearColor(0x040911, 1);
+        this.renderer.setClearColor(0xF0F2F5, 1);
 
         this.scene = new THREE.Scene();
         this.camera = new THREE.PerspectiveCamera(52, container.clientWidth / container.clientHeight, 0.1, 2200);
@@ -42,19 +47,24 @@ const Scene = {
         this.raycaster = new THREE.Raycaster();
         this.pointer = new THREE.Vector2();
 
-        const hemi = new THREE.HemisphereLight(0x90dcff, 0x05101d, 0.88);
+        const hemi = new THREE.HemisphereLight(0xffffff, 0xD0D8E0, 0.95);
         this.scene.add(hemi);
 
         const key = new THREE.DirectionalLight(0xffffff, 0.72);
         key.position.set(8, 14, 10);
         this.scene.add(key);
 
+        const fill = new THREE.AmbientLight(0xffffff, 0.25);
+        this.scene.add(fill);
+
         this.membershipGroup = new THREE.Group();
         this.trueEdgeGroup = new THREE.Group();
         this.observedEdgeGroup = new THREE.Group();
+        this.eventGroup = new THREE.Group();
         this.scene.add(this.membershipGroup);
         this.scene.add(this.trueEdgeGroup);
         this.scene.add(this.observedEdgeGroup);
+        this.scene.add(this.eventGroup);
 
         this.renderer.domElement.addEventListener('click', (event) => this._handleClick(event));
         window.addEventListener('resize', () => this.onResize());
@@ -86,16 +96,18 @@ const Scene = {
         const edges = new THREE.EdgesGeometry(box);
         this.boxHelper = new THREE.LineSegments(
             edges,
-            new THREE.LineBasicMaterial({ color: 0x2d4e76, transparent: true, opacity: 0.45 }),
+            new THREE.LineBasicMaterial({ color: 0x9AADBE, transparent: true, opacity: 0.55 }),
         );
         this.boxHelper.position.set(sx / 2, sz / 2, sy / 2);
         this.scene.add(this.boxHelper);
 
-        this.gridHelper = new THREE.GridHelper(Math.max(sx, sy), 16, 0x284766, 0x16304a);
+        const gridSize = Math.max(sx, sy) * 5;
+        this.gridHelper = new THREE.GridHelper(gridSize, 16 * 5, 0xC0CDD8, 0xDDE5ED);
         this.gridHelper.position.set(sx / 2, 0, sy / 2);
         this.scene.add(this.gridHelper);
+        this.gridStep = gridSize / (16 * 5);
 
-        this.camera.position.set(sx * 1.12, Math.max(sz * 2.05, 4), sy * 1.15);
+        this.camera.position.set(sx * 1.5, Math.max(sz * 3.5, 8), sy * 2.2);
         this.controls.target.set(sx / 2, sz / 2, sy / 2);
         this.controls.update();
     },
@@ -110,11 +122,11 @@ const Scene = {
 
     _ensureNodes(count) {
         while (this.nodeMeshes.length < count) {
-            const geometry = new THREE.SphereGeometry(0.1, 18, 18);
+            const geometry = new THREE.SphereGeometry(0.12, 18, 18);
             const material = new THREE.MeshStandardMaterial({
-                color: 0x4ed8ff,
-                roughness: 0.28,
-                metalness: 0.1,
+                color: 0x0066CC,
+                roughness: 0.35,
+                metalness: 0.05,
                 emissive: 0x000000,
             });
             const mesh = new THREE.Mesh(geometry, material);
@@ -136,7 +148,7 @@ const Scene = {
 
     _clusterColor(clusterId) {
         if (clusterId === null || clusterId === undefined || clusterId < 0) {
-            return 0x6a7d91;
+            return 0xBBCCDD;
         }
         return this.palette[clusterId % this.palette.length];
     },
@@ -168,26 +180,149 @@ const Scene = {
             this.buildScene(bounds);
         }
 
+        /* capture drift offset from engine */
+        this.driftOffset = state.drift_offset || 0;
+        const driftScaled = this.driftOffset * this.scaleFactor;
+
         this._ensureNodes(state.nodes.length);
 
         state.nodes.forEach((node, index) => {
             const mesh = this.nodeMeshes[index];
-            const [x, y, z] = this._worldToScene(node.position);
+            const pos = node.position.slice();
+            /* apply horizontal drift — whole swarm moves forward (no wrap) */
+            if (this.driftOffset) {
+                pos[0] += this.driftOffset;
+            }
+            const [x, y, z] = this._worldToScene(pos);
             const color = this._clusterColor(node.cluster_id);
             const clusterHighlight = this.selectedClusterId !== null && node.cluster_id === this.selectedClusterId;
             const nodeHighlight = this.selectedNodeId !== null && node.id === this.selectedNodeId;
-            const baseScale = node.leader ? 1.45 : 1.0;
+            const isLeader = node.leader;
+            const baseScale = isLeader ? 1.55 : 1.0;
             mesh.position.set(x, y, z);
             mesh.scale.setScalar(nodeHighlight ? baseScale * 1.25 : baseScale);
             mesh.material.color.setHex(color);
-            mesh.material.opacity = node.active_cluster ? 1.0 : 0.22;
+            mesh.material.opacity = node.active_cluster ? 1.0 : 0.28;
             mesh.material.transparent = !node.active_cluster;
-            mesh.material.emissive.setHex(nodeHighlight ? 0xffffff : (clusterHighlight || node.leader ? color : 0x000000));
-            mesh.material.emissiveIntensity = nodeHighlight ? 0.82 : (clusterHighlight ? 0.48 : (node.leader ? 0.26 : 0.0));
+
+            /* flash nodes that just reassociated / deassociated */
+            const flash = this._flashNodes[node.id];
+            if (flash && flash.ttl > 0) {
+                mesh.material.emissive.setHex(flash.color);
+                mesh.material.emissiveIntensity = 0.6 * (flash.ttl / flash.maxTtl);
+                flash.ttl--;
+            } else {
+                mesh.material.emissive.setHex(
+                    nodeHighlight ? 0x333333 : (clusterHighlight || isLeader ? color : 0x000000)
+                );
+                mesh.material.emissiveIntensity = nodeHighlight ? 0.45 : (clusterHighlight ? 0.30 : (isLeader ? 0.18 : 0.0));
+            }
             mesh.userData = { nodeId: node.id };
         });
 
+        /* slide bounding box, grid, and camera orbit target to follow drift */
+        if (this.bounds && driftScaled) {
+            const sx = this.bounds[0] * this.scaleFactor;
+            const sy = this.bounds[1] * this.scaleFactor;
+            const sz = this.bounds[2] * this.scaleFactor;
+            
+            if (this.boxHelper) {
+                this.boxHelper.position.set(sx / 2 + driftScaled, sz / 2, sy / 2);
+            }
+            if (this.gridHelper && this.gridStep) {
+                const offset = driftScaled % this.gridStep;
+                this.gridHelper.position.set(sx / 2 + driftScaled - offset, 0, sy / 2);
+            }
+            this.controls.target.set(sx / 2 + driftScaled, sz / 2, sy / 2);
+            
+            const deltaDrift = driftScaled - (this._lastDriftScaled || 0);
+            if (deltaDrift > 0 && deltaDrift < sx) {
+                this.camera.position.x += deltaDrift;
+            }
+            this._lastDriftScaled = driftScaled;
+            
+            this.controls.update();
+        }
+
+        /* process event indicators */
+        this._processEventIndicators(state);
+
         this._rebuildEdges(state);
+        this._tickEventRings();
+    },
+
+    _processEventIndicators(state) {
+        const events = state.events || {};
+
+        /* reassociation flash (blue) */
+        (events.reassociated_nodes || []).forEach((item) => {
+            this._flashNodes[item.node_id] = { color: 0x0066CC, ttl: 6, maxTtl: 6 };
+        });
+
+        /* deassociation flash (red) */
+        (events.deassociated_nodes || []).forEach((item) => {
+            this._flashNodes[item.node_id] = { color: 0xDC3545, ttl: 8, maxTtl: 8 };
+        });
+
+        /* leader change — expanding ring at old leader position */
+        (events.leader_changes || []).forEach((item) => {
+            const oldNode = (state.nodes || []).find((n) => n.id === item.old_leader);
+            if (oldNode) {
+                const pos = oldNode.position.slice();
+                if (this.driftOffset) {
+                    pos[0] += this.driftOffset;
+                }
+                const [x, y, z] = this._worldToScene(pos);
+                this._spawnEventRing(x, y, z, 0xE67E22);
+            }
+            /* flash old leader orange */
+            this._flashNodes[item.old_leader] = { color: 0xE67E22, ttl: 10, maxTtl: 10 };
+        });
+
+        /* failure events — red ring */
+        (events.failure_nodes || []).forEach((item) => {
+            const failNode = (state.nodes || []).find((n) => n.id === item.node_id);
+            if (failNode) {
+                const pos = failNode.position.slice();
+                if (this.driftOffset) {
+                    pos[0] += this.driftOffset;
+                }
+                const [x, y, z] = this._worldToScene(pos);
+                this._spawnEventRing(x, y, z, 0xDC3545);
+            }
+            this._flashNodes[item.node_id] = { color: 0xDC3545, ttl: 12, maxTtl: 12 };
+        });
+    },
+
+    _spawnEventRing(x, y, z, color) {
+        const geometry = new THREE.RingGeometry(0.05, 0.08, 32);
+        const material = new THREE.MeshBasicMaterial({
+            color,
+            transparent: true,
+            opacity: 0.85,
+            side: THREE.DoubleSide,
+        });
+        const ring = new THREE.Mesh(geometry, material);
+        ring.position.set(x, y, z);
+        ring.lookAt(this.camera.position);
+        this.eventGroup.add(ring);
+        this._eventRings.push({ mesh: ring, ttl: 18, maxTtl: 18 });
+    },
+
+    _tickEventRings() {
+        for (let i = this._eventRings.length - 1; i >= 0; i--) {
+            const ring = this._eventRings[i];
+            ring.ttl--;
+            const progress = 1 - ring.ttl / ring.maxTtl;
+            const scale = 1 + progress * 6;
+            ring.mesh.scale.setScalar(scale);
+            ring.mesh.material.opacity = Math.max(0, 0.85 * (ring.ttl / ring.maxTtl));
+            ring.mesh.lookAt(this.camera.position);
+            if (ring.ttl <= 0) {
+                this.eventGroup.remove(ring.mesh);
+                this._eventRings.splice(i, 1);
+            }
+        }
     },
 
     _rebuildEdges(state) {
@@ -195,9 +330,15 @@ const Scene = {
         this._clearGroup(this.trueEdgeGroup);
         this._clearGroup(this.observedEdgeGroup);
 
+        const bounds = state.bounds || [100, 100, 60];
         const nodeById = {};
         state.nodes.forEach((node) => {
-            nodeById[node.id] = this._worldToScene(node.position);
+            const pos = node.position.slice();
+            /* apply drift — straight forward shift (no wrap) */
+            if (this.driftOffset) {
+                pos[0] += this.driftOffset;
+            }
+            nodeById[node.id] = this._worldToScene(pos);
         });
 
         (state.clusters || []).forEach((cluster) => {
@@ -220,7 +361,7 @@ const Scene = {
                 const material = new THREE.LineBasicMaterial({
                     color: this._clusterColor(cluster.cluster_id),
                     transparent: true,
-                    opacity: this.selectedClusterId !== null && cluster.cluster_id !== this.selectedClusterId ? 0.1 : 0.32,
+                    opacity: this.selectedClusterId !== null && cluster.cluster_id !== this.selectedClusterId ? 0.1 : 0.38,
                 });
                 this.membershipGroup.add(new THREE.Line(geometry, material));
             });
@@ -244,7 +385,7 @@ const Scene = {
             this.trueEdgeGroup.add(
                 new THREE.Line(
                     geometry,
-                    new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.42 }),
+                    new THREE.LineBasicMaterial({ color: 0x333333, transparent: true, opacity: 0.45 }),
                 ),
             );
         });
@@ -262,9 +403,9 @@ const Scene = {
             const line = new THREE.Line(
                 geometry,
                 new THREE.LineDashedMaterial({
-                    color: 0xffc96c,
+                    color: 0xE67E22,
                     transparent: true,
-                    opacity: 0.5,
+                    opacity: 0.55,
                     dashSize: 0.12,
                     gapSize: 0.1,
                 }),

@@ -84,13 +84,17 @@ CLUSTER_COLORS = [
     "#3A86FF",  # bright blue
 ]
 
-TRAIL_ALPHA = 0.15
-EDGE_COLOR = "#FF006E"
-EDGE_ALPHA = 0.45
-BG_COLOR = "#0D1117"
-GRID_COLOR = "#21262D"
-TEXT_COLOR = "#C9D1D9"
-LEADER_EDGE_COLOR = "#FFD700"
+TRAIL_ALPHA = 0.18
+EDGE_COLOR = "#D63384"
+EDGE_ALPHA = 0.50
+BG_COLOR = "#FFFFFF"
+GRID_COLOR = "#E0E0E0"
+TEXT_COLOR = "#1A1A2E"
+LEADER_EDGE_COLOR = "#FF8C00"
+EVENT_REASSOC_COLOR = "#0066CC"
+EVENT_DEASSOC_COLOR = "#DC3545"
+EVENT_HANDOVER_COLOR = "#E67E22"
+EVENT_FAILURE_COLOR = "#DC3545"
 
 
 def _get_color(cluster_id: int) -> str:
@@ -104,7 +108,7 @@ def _get_color(cluster_id: int) -> str:
 class EpisodeRecorder:
     """Collects per-step data from a MARLMacEnv episode for animation."""
 
-    def __init__(self):
+    def __init__(self, drift_speed: float = 0.0):
         self.positions: list[np.ndarray] = []        # (steps, N, 3)
         self.velocities: list[np.ndarray] = []       # (steps, N, 3)
         self.assignments: list[np.ndarray] = []      # (steps, N)
@@ -113,6 +117,7 @@ class EpisodeRecorder:
         self.edge_indices: list[np.ndarray] = []     # (2, E)
         self.summaries: list[dict[str, Any]] = []
         self.infos: list[dict[str, Any]] = []
+        self.drift_speed = drift_speed
 
     def snapshot(self, env) -> None:
         """Capture current environment state."""
@@ -251,7 +256,7 @@ class FANETAnimator2D:
         self.ax = None
 
     def _setup_figure(self):
-        """Create the figure and axis with dark theme styling."""
+        """Create the figure and axis with light theme styling."""
         self.fig, self.ax = plt.subplots(
             1, 1, figsize=self.figsize,
             facecolor=BG_COLOR,
@@ -307,26 +312,37 @@ class FANETAnimator2D:
             0.02, 0.98, "", transform=ax.transAxes,
             fontsize=9, color=TEXT_COLOR,
             verticalalignment="top", fontfamily="monospace",
-            bbox=dict(boxstyle="round,pad=0.4", facecolor="#161B22", edgecolor=GRID_COLOR, alpha=0.9),
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="#F0F4F8", edgecolor=GRID_COLOR, alpha=0.92),
         )
 
         # Legend placeholder
         self.legend_text = ax.text(
             0.98, 0.02, "", transform=ax.transAxes,
-            fontsize=7, color="#8B949E",
+            fontsize=7, color="#5A6B82",
             verticalalignment="bottom", horizontalalignment="right", fontfamily="monospace",
         )
+
+        # Event annotation artists (temporary per-frame)
+        self.event_annotations: list[Any] = []
 
         plt.tight_layout()
 
     def _update_frame(self, frame_idx: int):
         """Update all artists for a single animation frame."""
         rec = self.rec
-        pos = rec.positions[frame_idx]      # (N, 3) — use x, y
+        pos = rec.positions[frame_idx].copy()  # (N, 3) — use x, y
         assign = rec.assignments[frame_idx]  # (N,)
         leaders = rec.leaders[frame_idx]     # {cid: uav_idx}
         active_cids = rec.active_cids[frame_idx]
         edge_index = rec.edge_indices[frame_idx]
+
+        # Apply horizontal drift — whole swarm moves forward (no wrap)
+        drift_offset = 0
+        if rec.drift_speed > 0:
+            drift_offset = rec.drift_speed * frame_idx
+            pos[:, 0] += drift_offset
+            # Slide the X-axis view to follow the swarm
+            self.ax.set_xlim(-5 + drift_offset, self.area_x + 5 + drift_offset)
 
         # --- Separate leaders vs subordinates ---
         leader_set = set(leaders.values())
@@ -396,7 +412,7 @@ class FANETAnimator2D:
         if self.show_trails:
             start = max(0, frame_idx - self.trail_length)
             for i in range(rec.n_uavs):
-                trail_x = [rec.positions[t][i, 0] for t in range(start, frame_idx + 1)]
+                trail_x = [rec.positions[t][i, 0] + rec.drift_speed * t for t in range(start, frame_idx + 1)]
                 trail_y = [rec.positions[t][i, 1] for t in range(start, frame_idx + 1)]
                 color = colors_all[i]
                 if i in self.trail_lines:
@@ -449,8 +465,83 @@ class FANETAnimator2D:
             else:
                 self.metrics_text.set_text("Initializing...")
 
+        # --- Event annotations (reassociation, deassociation, handover, failure) ---
+        for ann in self.event_annotations:
+            try:
+                ann.remove()
+            except Exception:
+                pass
+        self.event_annotations.clear()
+
+        if frame_idx > 0:
+            prev_assign = rec.assignments[frame_idx - 1]
+            prev_leaders = rec.leaders[frame_idx - 1]
+
+            for i in range(rec.n_uavs):
+                cur_cid = assign[i]
+                prev_cid = prev_assign[i]
+                if cur_cid != prev_cid:
+                    if cur_cid < 0 and prev_cid >= 0:
+                        # Deassociation — red X marker
+                        marker = self.ax.plot(
+                            pos[i, 0], pos[i, 1], 'x',
+                            color=EVENT_DEASSOC_COLOR, markersize=10, markeredgewidth=2.5, zorder=15,
+                        )
+                        self.event_annotations.extend(marker)
+                    elif cur_cid >= 0 and prev_cid != cur_cid:
+                        # Reassociation — blue circle marker
+                        marker = self.ax.plot(
+                            pos[i, 0], pos[i, 1], 'o',
+                            color=EVENT_REASSOC_COLOR, markersize=8, fillstyle='none',
+                            markeredgewidth=2, zorder=15,
+                        )
+                        self.event_annotations.extend(marker)
+                        txt = self.ax.text(
+                            pos[i, 0] + 2, pos[i, 1] - 3, 'R',
+                            fontsize=7, color=EVENT_REASSOC_COLOR, fontweight='bold', zorder=16,
+                        )
+                        self.event_annotations.append(txt)
+
+            # Cluster head change / handover
+            for cid, leader_idx in leaders.items():
+                prev_leader = prev_leaders.get(cid)
+                if prev_leader is not None and prev_leader != leader_idx:
+                    # Old leader — orange X
+                    old_pos = rec.positions[frame_idx - 1][prev_leader]
+                    old_x = old_pos[0] + rec.drift_speed * frame_idx
+                    marker = self.ax.plot(
+                        old_x, old_pos[1], 'X',
+                        color=EVENT_HANDOVER_COLOR, markersize=14, markeredgewidth=2.5, zorder=15,
+                    )
+                    self.event_annotations.extend(marker)
+                    # Arrow from old to new leader
+                    arrow = self.ax.annotate(
+                        '', xy=(pos[leader_idx, 0], pos[leader_idx, 1]),
+                        xytext=(old_x, old_pos[1]),
+                        arrowprops=dict(arrowstyle='->', color=EVENT_HANDOVER_COLOR, lw=2),
+                        zorder=15,
+                    )
+                    self.event_annotations.append(arrow)
+
+        # Check for failure events in summaries
+        if frame_idx < len(rec.summaries) and rec.summaries[frame_idx]:
+            s = rec.summaries[frame_idx]
+            fail_count = int(s.get('failure_events', 0))
+            if frame_idx > 0 and frame_idx - 1 < len(rec.summaries) and rec.summaries[frame_idx - 1]:
+                prev_fail = int(rec.summaries[frame_idx - 1].get('failure_events', 0))
+                if fail_count > prev_fail:
+                    for cid, leader_idx in leaders.items():
+                        marker = self.ax.plot(
+                            pos[leader_idx, 0], pos[leader_idx, 1], 's',
+                            color=EVENT_FAILURE_COLOR, markersize=16, fillstyle='none',
+                            markeredgewidth=3, zorder=15, alpha=0.7,
+                        )
+                        self.event_annotations.extend(marker)
+
         # Legend
-        self.legend_text.set_text("★ = Cluster Head  •  ── = Interference Edge  •  ⚬ = R_I range")
+        self.legend_text.set_text(
+            "★ = CH  •  ── = Edge  •  ⚬ = R_I  •  ○ = Reassoc  •  ✗ = Deassoc  •  X = Handover"
+        )
 
         return (
             self.scat_sub, self.scat_leaders, self.edge_collection,
@@ -578,23 +669,31 @@ class FANETAnimator3D:
         ax.zaxis.pane.set_edgecolor(GRID_COLOR)
 
         rec = self.rec
-        pos = rec.positions[frame_idx]
+        pos = rec.positions[frame_idx].copy()
         assign = rec.assignments[frame_idx]
         leaders = rec.leaders[frame_idx]
         active_cids = rec.active_cids[frame_idx]
         edge_index = rec.edge_indices[frame_idx]
 
+        # Apply horizontal drift — whole swarm moves forward (no wrap)
+        drift_offset = 0
+        if rec.drift_speed > 0:
+            drift_offset = rec.drift_speed * frame_idx
+            pos[:, 0] += drift_offset
+            # Slide the X-axis view to follow the swarm
+            ax.set_xlim(drift_offset, params.AREA_X + drift_offset)
+
         leader_set = set(leaders.values())
 
         # Colors
-        colors = [_get_color(assign[i]) if assign[i] >= 0 else "#555555" for i in range(rec.n_uavs)]
+        colors = [_get_color(assign[i]) if assign[i] >= 0 else "#AAAAAA" for i in range(rec.n_uavs)]
 
         # Subordinates
         for i in range(rec.n_uavs):
             if i not in leader_set:
                 ax.scatter(
                     pos[i, 0], pos[i, 1], pos[i, 2],
-                    c=colors[i], s=25, alpha=0.7, edgecolors="white", linewidths=0.2,
+                    c=colors[i], s=25, alpha=0.7, edgecolors="#666", linewidths=0.2,
                 )
 
         # Leaders (stars)
@@ -626,14 +725,38 @@ class FANETAnimator3D:
                             color=EDGE_COLOR, linewidth=1.0, alpha=0.4,
                         )
 
-        # Trails
+        # Trails (with drift applied)
         start = max(0, frame_idx - self.trail_length)
         for i in range(rec.n_uavs):
-            trail = np.array([rec.positions[t][i] for t in range(start, frame_idx + 1)])
+            trail = np.array([rec.positions[t][i].copy() for t in range(start, frame_idx + 1)])
+            if rec.drift_speed > 0:
+                for t_idx, t in enumerate(range(start, frame_idx + 1)):
+                    trail[t_idx, 0] += rec.drift_speed * t
             ax.plot(
                 trail[:, 0], trail[:, 1], trail[:, 2],
-                color=colors[i], linewidth=0.5, alpha=0.15,
+                color=colors[i], linewidth=0.5, alpha=0.18,
             )
+
+        # --- 3D Event markers ---
+        if frame_idx > 0:
+            prev_assign = rec.assignments[frame_idx - 1]
+            prev_leaders = rec.leaders[frame_idx - 1]
+            for i in range(rec.n_uavs):
+                cur_cid = assign[i]
+                prev_cid = prev_assign[i]
+                if cur_cid != prev_cid:
+                    if cur_cid < 0 and prev_cid >= 0:
+                        ax.scatter(pos[i, 0], pos[i, 1], pos[i, 2],
+                                   c=EVENT_DEASSOC_COLOR, s=80, marker='x', linewidths=2.5, zorder=15)
+                    elif cur_cid >= 0:
+                        ax.scatter(pos[i, 0], pos[i, 1], pos[i, 2],
+                                   c=EVENT_REASSOC_COLOR, s=60, marker='o', facecolors='none',
+                                   linewidths=2, zorder=15)
+            for cid, leader_idx in leaders.items():
+                prev_leader = prev_leaders.get(cid)
+                if prev_leader is not None and prev_leader != leader_idx:
+                    ax.scatter(pos[leader_idx, 0], pos[leader_idx, 1], pos[leader_idx, 2],
+                               c=EVENT_HANDOVER_COLOR, s=200, marker='X', linewidths=2, zorder=15)
 
         ax.set_title(
             f"FANET 3D  •  Step {frame_idx}/{rec.n_steps - 1}  •  "
@@ -720,12 +843,18 @@ def make_magat_policy(checkpoint_dir: str):
     if not os.path.exists(ckpt_path):
         raise FileNotFoundError(f"MAGAT checkpoint not found: {ckpt_path}")
 
-    policy_net = MAGAT_D3QN_QNetwork(
-        node_in_dim=CC.OBS_DIM_CLUSTER,
-        hidden_dim=MARLConfig.HIDDEN_DIM,
-        num_actions=CC.NUM_ACTIONS,
-        heads=MARLConfig.GNN_HEADS,
-    ).to(device)
+    # Infer architecture from checkpoint to avoid head/dim mismatches
+    from experiments.run_unified_experiment import infer_magat_arch_from_checkpoint
+    inferred = infer_magat_arch_from_checkpoint(ckpt_path)
+    if inferred is not None:
+        policy_net = MAGAT_D3QN_QNetwork(**inferred).to(device)
+    else:
+        policy_net = MAGAT_D3QN_QNetwork(
+            node_in_dim=CC.OBS_DIM_CLUSTER,
+            hidden_dim=MARLConfig.HIDDEN_DIM,
+            num_actions=CC.NUM_ACTIONS,
+            heads=MARLConfig.GNN_HEADS,
+        ).to(device)
 
     state_dict = torch.load(ckpt_path, map_location=device, weights_only=True)
     policy_net.load_state_dict(state_dict)
@@ -782,6 +911,11 @@ def main():
         help="Policy to use for action selection",
     )
     parser.add_argument("--nodes", type=int, default=None, help="Override number of UAV nodes")
+    parser.add_argument(
+        "--mobility", choices=["gauss_markov", "random_waypoint", "random_walk", "circular", "static"],
+        default=None, help="Override mobility model",
+    )
+    parser.add_argument("--drift-speed", type=float, default=0.0, help="Horizontal X-drift speed per step")
     args = parser.parse_args()
 
     if not args.live and not args.save:
@@ -791,6 +925,10 @@ def main():
     # Override node count if specified
     if args.nodes is not None:
         params.N = args.nodes
+
+    # Override mobility model if specified
+    if args.mobility is not None:
+        params.MOBILITY_MODEL = args.mobility
 
     # Ensure MAX_STEPS_PER_EP exists
     if not hasattr(params, "MAX_STEPS_PER_EP"):
@@ -822,7 +960,8 @@ def main():
     # Run episode
     print(f"Running episode: {args.steps} steps, {params.N} UAVs, seed={args.seed}...")
     recorder = run_episode(env, max_steps=args.steps, policy_fn=policy_fn, seed=args.seed)
-    print(f"Recorded {recorder.n_steps} frames for {recorder.n_uavs} UAVs")
+    recorder.drift_speed = args.drift_speed
+    print(f"Recorded {recorder.n_steps} frames for {recorder.n_uavs} UAVs (drift={args.drift_speed})")
 
     # Animate
     if args.view == "3d":

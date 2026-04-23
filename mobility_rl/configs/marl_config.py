@@ -27,7 +27,7 @@ class MARLConfig:
     EPSILON_DECAY = 1500       # Steps for exponential decay
     TARGET_UPDATE_FREQ = 1000  # Steps between target net sync
     HIDDEN_DIM = 64
-    GNN_HEADS = 4
+    GNN_HEADS = 2              # Optuna trial-64 optimal (was 4)
     MAGAT_USE_GRAPH = True
     MAGAT_USE_ATTENTION = True
     MAGAT_USE_GRU = True

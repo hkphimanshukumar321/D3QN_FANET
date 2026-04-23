@@ -188,6 +188,59 @@ def get_magat_arch_kwargs():
     }
 
 
+def infer_magat_arch_from_checkpoint(checkpoint_path):
+    """Infer MAGAT-D3QN architecture params from checkpoint tensor shapes.
+
+    Examines the saved state_dict to extract the exact architecture used
+    during training, avoiding mismatches when MARLConfig defaults differ
+    from the Optuna-tuned hyperparameters that produced the checkpoint.
+
+    Returns a kwargs dict suitable for MAGAT_D3QN_QNetwork(**kwargs),
+    or None if the checkpoint cannot be parsed.
+    """
+    import torch as _torch
+    try:
+        sd = _torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    except Exception:
+        # Fallback for older PyTorch that doesn't support weights_only
+        sd = _torch.load(checkpoint_path, map_location="cpu")
+
+    if not isinstance(sd, dict):
+        return None
+
+    # conv1.att_src shape: [1, heads, hidden_dim]
+    att_src = sd.get("conv1.att_src")
+    if att_src is None:
+        return None  # Not a GAT-based checkpoint
+
+    heads = att_src.shape[1]
+    hidden_dim = att_src.shape[2]
+
+    # conv1.lin.weight shape: [heads * hidden_dim, node_in_dim]
+    lin_w = sd.get("conv1.lin.weight")
+    node_in_dim = lin_w.shape[1] if lin_w is not None else MARLConfig.OBS_DIM
+
+    # advantage_stream.2.weight shape: [num_actions, hidden_dim]
+    adv_w = sd.get("advantage_stream.2.weight")
+    num_actions = adv_w.shape[0] if adv_w is not None else MARLConfig.NUM_ACTIONS
+
+    # Detect ablation flags from presence/absence of layers
+    use_gru = "memory_block.weight_ih_l0" in sd
+    use_graph = True   # If conv1 exists, graph was used
+    use_attention = True  # att_src exists → attention was used
+
+    return {
+        "node_in_dim": node_in_dim,
+        "hidden_dim": hidden_dim,
+        "num_actions": num_actions,
+        "heads": heads,
+        "use_graph": use_graph,
+        "use_attention": use_attention,
+        "use_gru": use_gru,
+        "use_burst_history": getattr(MARLConfig, "MAGAT_USE_BURST_HISTORY", True),
+    }
+
+
 def aggregate_cluster_infos(raw_infos):
     """Aggregate per-cluster info dicts into burst-level metrics."""
     if not raw_infos:
@@ -370,7 +423,14 @@ def load_eval_models(cp_dir, log):
                 from algorithms.rl.gnn_marl import MAGAT_D3QN_QNetwork
 
                 device = torch.device("cpu")
-                gnn = MAGAT_D3QN_QNetwork(**get_magat_arch_kwargs()).to(device)
+                # Infer architecture from checkpoint to avoid head/dim mismatches
+                inferred_kwargs = infer_magat_arch_from_checkpoint(gnn_path)
+                magat_kwargs = inferred_kwargs if inferred_kwargs is not None else get_magat_arch_kwargs()
+                log(f"  MAGAT arch: heads={magat_kwargs['heads']}, "
+                    f"hidden={magat_kwargs['hidden_dim']}, "
+                    f"in={magat_kwargs['node_in_dim']}, "
+                    f"actions={magat_kwargs['num_actions']}")
+                gnn = MAGAT_D3QN_QNetwork(**magat_kwargs).to(device)
                 gnn.load_state_dict(torch.load(gnn_path, map_location=device))
                 gnn.eval()
                 models["MAGAT-D3QN"] = ("marl_gnn", gnn)

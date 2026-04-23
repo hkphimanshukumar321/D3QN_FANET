@@ -175,7 +175,7 @@ INT_ENV_OPTIONS = {
 
 BOOLEAN_ENV_OPTIONS = {"use_burst_history"}
 
-MOBILITY_MODEL_OPTIONS = ["gauss_markov", "random_waypoint", "random_walk", "circular"]
+MOBILITY_MODEL_OPTIONS = ["gauss_markov", "random_waypoint", "random_walk", "circular", "static"]
 TRAFFIC_PROFILE_OPTIONS = ["smooth", "bursty_on_off", "heavy_tail"]
 GRAPH_MODE_OPTIONS = ["dynamic", "none", "static", "shuffled"]
 TOPOLOGY_PRESET_OPTIONS = ["default", "compact_dense", "sparse_separated", "asymmetric_hotspot"]
@@ -729,6 +729,7 @@ class SimulationEngine:
             "policy_id": None,
             "deterministic": True,
             "speed_factor": 1.0,
+            "drift_speed": 2.0,
         }
         self.runtime_status = {
             "policy_warning": None,
@@ -760,6 +761,7 @@ class SimulationEngine:
         self.membership_history: list[dict[str, Any]] = []
         self._prev_summary_counts = {"splits": 0, "merges": 0, "reassociations": 0, "handovers": 0, "failure_events": 0}
         self._prev_leader_map: dict[int, int] = {}
+        self._prev_cluster_assignments: dict[int, int] = {}
 
         self._apply_config_overrides(config or {})
         self._rebuild_preset_registry_if_needed()
@@ -1175,6 +1177,8 @@ class SimulationEngine:
             value = _coerce_value(value, as_bool=True)
         elif key == "speed_factor":
             value = max(0.1, float(value))
+        elif key == "drift_speed":
+            value = max(0.0, float(value))
         self.runtime[key] = value
         if key == "deterministic":
             self._reset_policy_runtime()
@@ -1542,11 +1546,66 @@ class SimulationEngine:
         }
         self._prev_leader_map = current_leaders
 
+        # --- Per-node reassociation / deassociation tracking ---
+        reassociated_nodes: list[dict[str, Any]] = []
+        deassociated_nodes: list[dict[str, Any]] = []
+        if self.marl_env is not None and self._prev_cluster_assignments:
+            cm = self.marl_env.cluster_manager
+            n_nodes = int(getattr(params, "N", len(cm.assignment)))
+            for idx in range(min(n_nodes, len(cm.assignment))):
+                cur = int(cm.assignment[idx])
+                prev = self._prev_cluster_assignments.get(idx, -1)
+                if cur != prev:
+                    if cur < 0 and prev >= 0:
+                        deassociated_nodes.append({"node_id": idx, "from_cluster": prev})
+                        feed.append({
+                            "id": f"{tick}:deassoc:{idx}",
+                            "tick": tick,
+                            "sim_time": sim_time,
+                            "kind": "deassociation",
+                            "severity": "danger",
+                            "message": f"Node {idx} left cluster {prev} (now orphan).",
+                        })
+                    elif cur >= 0 and prev != cur:
+                        reassociated_nodes.append({"node_id": idx, "from_cluster": prev, "to_cluster": cur})
+                        feed.append({
+                            "id": f"{tick}:reassoc:{idx}",
+                            "tick": tick,
+                            "sim_time": sim_time,
+                            "kind": "reassociation",
+                            "severity": "info",
+                            "message": f"Node {idx} moved from cluster {prev} to cluster {cur}.",
+                        })
+
+        # Update previous assignments
+        if self.marl_env is not None:
+            cm = self.marl_env.cluster_manager
+            self._prev_cluster_assignments = {idx: int(cm.assignment[idx]) for idx in range(len(cm.assignment))}
+
+        # Build leader_changes and failure_nodes for scene indicators
+        leader_changes = []
+        for cid in changed_clusters:
+            leader_changes.append({
+                "cluster_id": int(cid),
+                "old_leader": int(self._prev_leader_map.get(cid, -1)) if hasattr(self, '_prev_leader_map') else -1,
+                "new_leader": int(current_leaders.get(cid, -1)),
+            })
+
+        failure_nodes = []
+        for f in failures:
+            cid = int(f.get("cluster_id", -1))
+            old_leader = int(self._prev_leader_map.get(cid, -1)) if hasattr(self, '_prev_leader_map') else -1
+            failure_nodes.append({"node_id": old_leader, "cluster_id": cid})
+
         return {
             "counts": counts,
             "handover_clusters": [int(cid) for cid in changed_clusters],
             "failure_events": failures,
             "feed": feed,
+            "reassociated_nodes": reassociated_nodes,
+            "deassociated_nodes": deassociated_nodes,
+            "leader_changes": leader_changes,
+            "failure_nodes": failure_nodes,
         }
 
     def _build_snapshot(self, initial: bool = False) -> dict[str, Any]:
@@ -1589,6 +1648,7 @@ class SimulationEngine:
                 "stats": graph_stats,
             },
             "metrics": metrics,
+            "drift_offset": float(self.runtime.get("drift_speed", 0)) * self.tick_count,
             "runtime": {
                 "policy_id": descriptor["id"],
                 "policy_label": descriptor["label"],
@@ -1600,6 +1660,8 @@ class SimulationEngine:
                 "policy_warning": self.runtime_status.get("policy_warning"),
                 "deterministic": bool(self.runtime.get("deterministic", True)),
                 "speed_factor": float(self.runtime.get("speed_factor", 1.0)),
+                "drift_speed": float(self.runtime.get("drift_speed", 0)),
+                "mobility_model": str(self._effective_env_options().get("mobility_model", getattr(params, "MOBILITY_MODEL", "random_walk"))),
             },
             "scenario": {
                 "preset_id": self.selected_preset_id,

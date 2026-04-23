@@ -66,6 +66,11 @@
         document.getElementById('status-study-block').textContent = state.scenario.study_block || state.scenario.preset_group;
         document.getElementById('status-warning').textContent = warning;
         document.getElementById('warning-card').classList.toggle('warning', !!warning && warning !== 'No warnings');
+
+        /* show current mobility model */
+        const mobilityLabel = state.runtime.mobility_model || 'random_walk';
+        const driftSpeed = state.runtime.drift_speed != null ? state.runtime.drift_speed : 0;
+        document.getElementById('status-mac').textContent = `${tdmaCount} TDMA / ${csmaCount} CSMA | ${mobilityLabel}` + (driftSpeed > 0 ? ` | drift ${driftSpeed.toFixed(1)}` : '');
     }
 
     function renderState(state) {
@@ -208,6 +213,17 @@
         const factor = parseFloat(speedSlider.value);
         document.getElementById('speed-val').textContent = `${factor.toFixed(1)}x`;
         WS.send('SET_SPEED', { factor });
+    });
+
+    const driftSlider = document.getElementById('drift-slider');
+    driftSlider.addEventListener('input', () => {
+        const driftSpeed = parseFloat(driftSlider.value);
+        document.getElementById('drift-val').textContent = driftSpeed.toFixed(1);
+        WS.send('SET_RUNTIME', { key: 'drift_speed', value: driftSpeed });
+    });
+
+    document.getElementById('mobility-select').addEventListener('change', (event) => {
+        WS.send('SET_ENV_OPTION', { key: 'mobility_model', value: event.target.value });
     });
 
     WS.connect();
