@@ -209,7 +209,7 @@ graph TB
 The `simulator_ui/` module provides a **real-time browser-based dashboard** for visualizing and interacting with the decentralized cluster-head environment.
 
 <p align="center">
-  <img src="simulator_ui/preview.png" alt="Simulator UI Dashboard Preview" width="800"/>
+  <img src="simulator_ui/preview.jpg" alt="Simulator UI Dashboard — Live Swarm Visualization" width="800"/>
 </p>
 
 ### What the Dashboard Shows
