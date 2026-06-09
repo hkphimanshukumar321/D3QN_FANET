@@ -212,3 +212,6 @@ nohup.out
 
 # Optuna
 *.db-journal
+
+# Deprecated work
+deprecated_work/Adaptive_MAC_Protocol_for_FANETs__2_/
