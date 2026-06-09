@@ -24,6 +24,7 @@ from gymnasium import spaces
 from pettingzoo import ParallelEnv
 
 from algorithms.mac.baseline import Config, Logger, simulate_csma_ca, simulate_tdma
+from algorithms.mac.channel_aware_mac import simulate_tdma_aware, simulate_csma_aware
 from algorithms.mobility.models import create_mobility_model
 from algorithms.mobility.speed import SpeedEngine
 from algorithms.rl.rewards import compute_cluster_reward
@@ -110,6 +111,59 @@ class MARLMacEnv(ParallelEnv):
             )
         else:
             self.fading_channel = AWGNChannel()
+
+    def _compute_fading_schedule(self, members: list[int], sim_time: float, cfg) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Build link_up_schedule and success_prob_schedule arrays for channel-aware MAC.
+
+        Uses current UAV positions, path-loss, fading channel, and BER calculator
+        to produce per-node, per-mobility-step packet success probabilities.
+
+        Returns:
+            link_up:       (N_cluster, T_mob_steps) binary array (always 1)
+            success_prob:  (N_cluster, T_mob_steps) float array in [0, 1]
+        """
+        n = len(members)
+        mobility_dt = getattr(params, "MOBILITY_DT", 0.1)
+        t_mob_steps = max(1, int(np.ceil(sim_time / mobility_dt)))
+
+        link_up = np.ones((n, t_mob_steps), dtype=np.int32)
+        success_prob = np.ones((n, t_mob_steps), dtype=np.float64)
+
+        if self.fading_channel is None or self.ber_calc is None:
+            return link_up, success_prob
+
+        pos = self.mobility_model.positions  # (N_uavs, 3)
+        tx_power_dbm = getattr(params, "TX_POWER_DBM", 20.0)
+        noise_dbm = getattr(params, "NOISE_POWER_DBM", -80.0)
+        eta = getattr(params, "PATHLOSS_ETA", 2.0)
+        payload_bits = cfg.payload_bits
+        d0 = 1.0  # reference distance in meters
+        pl0 = 46.4  # free-space PL at d0=1m, 2.4 GHz
+
+        # Leader is first member (cluster head)
+        leader_idx = members[0]
+        leader_pos = pos[leader_idx]
+
+        for local_idx, uav_idx in enumerate(members):
+            d = np.linalg.norm(pos[uav_idx] - leader_pos)
+            d = max(d, d0)  # avoid log(0)
+
+            # Path loss in dB
+            pl_db = pl0 + 10.0 * eta * np.log10(d / d0)
+            avg_snr_db = tx_power_dbm - pl_db - noise_dbm
+            avg_snr_linear = 10.0 ** (avg_snr_db / 10.0)
+
+            for t_step in range(t_mob_steps):
+                # Sample fading gain for this link at this time step
+                gain = self.fading_channel.sample_gain(1, self.rng)[0]
+                inst_snr = avg_snr_linear * gain
+                ber = float(self.ber_calc.compute_ber(np.array([inst_snr]))[0])
+                # Packet success rate: (1 - BER)^payload_bits
+                psr = (1.0 - ber) ** payload_bits if ber < 1.0 else 0.0
+                success_prob[local_idx, t_step] = np.clip(psr, 0.0, 1.0)
+
+        return link_up, success_prob
 
     def _clone_obs_dict(self, obs_dict):
         return {k: np.array(v, dtype=np.float32, copy=True) for k, v in obs_dict.items()}
@@ -581,10 +635,18 @@ class MARLMacEnv(ParallelEnv):
             log = Logger(load_pps=offered_pps, protocol_name="TDMA" if decoded.mac_mode == 0 else "CSMA_CA")
             sub_load = offered_pps * (n_in_cluster / max(self.N_uavs, 1))
 
-            if decoded.mac_mode == 0:
-                simulate_tdma(cfg, sub_load, log)
+            if self.fading_channel is not None and self.ber_calc is not None:
+                link_up, success_prob = self._compute_fading_schedule(members, decoded.t1_time, cfg)
+                mob_dt = getattr(params, "MOBILITY_DT", 0.1)
+                if decoded.mac_mode == 0:
+                    simulate_tdma_aware(cfg, sub_load, log, link_up, success_prob, mobility_dt=mob_dt)
+                else:
+                    simulate_csma_aware(cfg, sub_load, log, link_up, success_prob, mobility_dt=mob_dt)
             else:
-                simulate_csma_ca(cfg, sub_load, log)
+                if decoded.mac_mode == 0:
+                    simulate_tdma(cfg, sub_load, log)
+                else:
+                    simulate_csma_ca(cfg, sub_load, log)
 
             cluster_logs[cid] = log
 

@@ -117,6 +117,7 @@ class EpisodeRecorder:
         self.edge_indices: list[np.ndarray] = []     # (2, E)
         self.summaries: list[dict[str, Any]] = []
         self.infos: list[dict[str, Any]] = []
+        self.action_data: list[dict[int, dict]] = []  # per-step {cid: {mac, rho, ...}}
         self.drift_speed = drift_speed
 
     def snapshot(self, env) -> None:
@@ -139,6 +140,21 @@ class EpisodeRecorder:
     def record_step_info(self, summary: dict, infos: dict) -> None:
         self.summaries.append(dict(summary))
         self.infos.append(dict(infos))
+        # Extract per-cluster action decisions from infos
+        actions = {}
+        for key, val in infos.items():
+            if isinstance(val, dict) and val.get("alive", False):
+                cid = int(key.replace("cluster_", "")) if key.startswith("cluster_") else -1
+                if cid >= 0:
+                    actions[cid] = {
+                        "mac": int(val.get("chosen_mac", 0)),
+                        "mac_name": "TDMA" if int(val.get("chosen_mac", 0)) == 0 else "CSMA",
+                        "rho": float(val.get("rho", CC.DEFAULT_RHO)),
+                        "t1": float(val.get("t1_time", 0)),
+                        "t2": float(val.get("t2_time", 0)),
+                        "throughput": float(val.get("throughput_mbps", 0)),
+                    }
+        self.action_data.append(actions)
 
     @property
     def n_steps(self) -> int:
@@ -433,8 +449,13 @@ class FANETAnimator2D:
             for cid, leader_idx in leaders.items():
                 lx, ly = pos[leader_idx, 0], pos[leader_idx, 1]
                 n_members = np.sum(assign == cid)
+                # Build label with action info when available
+                label = f"C{cid}({n_members})"
+                if frame_idx < len(rec.action_data) and cid in rec.action_data[frame_idx]:
+                    ad = rec.action_data[frame_idx][cid]
+                    label += f"\n{ad['mac_name']} ρ={ad['rho']:.1f}"
                 txt = self.ax.text(
-                    lx + 3, ly + 3, f"C{cid}({n_members})",
+                    lx + 3, ly + 3, label,
                     fontsize=7, color=_get_color(cid), fontweight="bold",
                     zorder=7, alpha=0.9,
                 )
@@ -461,6 +482,15 @@ class FANETAnimator2D:
                     f"Reassoc:    {s.get('reassociations', 0)}",
                     f"Handovers:  {s.get('handovers', 0)}",
                 ]
+                # Per-cluster action info (MAC + rho)
+                if frame_idx < len(rec.action_data) and rec.action_data[frame_idx]:
+                    lines.append("--- Actions ---")
+                    for cid in sorted(rec.action_data[frame_idx].keys()):
+                        ad = rec.action_data[frame_idx][cid]
+                        lines.append(
+                            f"C{cid}: {ad['mac_name']:4s} ρ={ad['rho']:.1f}"
+                            f" T={ad['throughput']:.1f}Mbps"
+                        )
                 self.metrics_text.set_text("\n".join(lines))
             else:
                 self.metrics_text.set_text("Initializing...")
@@ -540,7 +570,7 @@ class FANETAnimator2D:
 
         # Legend
         self.legend_text.set_text(
-            "★ = CH  •  ── = Edge  •  ⚬ = R_I  •  ○ = Reassoc  •  ✗ = Deassoc  •  X = Handover"
+            "* = CH  |  -- = Edge  |  (r) = R_I  |  o = Reassoc  |  x = Deassoc  |  X = Handover"
         )
 
         return (
@@ -888,6 +918,17 @@ def main():
     parser = argparse.ArgumentParser(
         description="FANET Multi-Agent Simulation Visualizer",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+Config-driven examples:
+    # Change area size and node count
+    python utils/visualize_fanet.py --live --nodes 30 --area 300 300 80
+
+    # Change fading and topology
+    python utils/visualize_fanet.py --live --fading rayleigh --topology compact_dense
+
+    # Moving-floor effect (auto-enabled, override with --drift-speed)
+    python utils/visualize_fanet.py --live --drift-speed 2.5 --steps 150
+""",
     )
     parser.add_argument("--live", action="store_true", help="Show live animation window")
     parser.add_argument("--save", type=str, default=None, help="Save animation to file (.mp4 or .gif)")
@@ -910,29 +951,96 @@ def main():
         default="random",
         help="Policy to use for action selection",
     )
-    parser.add_argument("--nodes", type=int, default=None, help="Override number of UAV nodes")
-    parser.add_argument(
-        "--mobility", choices=["gauss_markov", "random_waypoint", "random_walk", "circular", "static"],
-        default=None, help="Override mobility model",
-    )
-    parser.add_argument("--drift-speed", type=float, default=0.0, help="Horizontal X-drift speed per step")
+
+    # --- Config-driven args: changes here propagate to the environment ---
+    cfg_group = parser.add_argument_group("Config Overrides (maps to configs/)")
+    cfg_group.add_argument("--nodes", type=int, default=None,
+                           help=f"Number of UAVs (config.N, default={params.N})")
+    cfg_group.add_argument("--area", type=float, nargs=3, default=None,
+                           metavar=("X", "Y", "Z"),
+                           help=f"Bounding area in meters (default={params.AREA_X} {params.AREA_Y} {params.AREA_Z})")
+    cfg_group.add_argument("--mobility", default=None,
+                           choices=["gauss_markov", "random_waypoint", "random_walk", "circular", "static"],
+                           help=f"Mobility model (default={params.MOBILITY_MODEL})")
+    cfg_group.add_argument("--speed-range", type=float, nargs=2, default=None,
+                           metavar=("MIN", "MAX"),
+                           help=f"Speed range m/s (default={params.V_MIN} {params.V_MAX})")
+    cfg_group.add_argument("--fading", default=None,
+                           choices=["awgn", "rayleigh", "rician", "nakagami"],
+                           help=f"Fading model (default={params.FADING_MODEL})")
+    cfg_group.add_argument("--topology", default=None,
+                           choices=["default", "compact_dense", "sparse_separated", "asymmetric_hotspot"],
+                           help=f"Topology preset (default={params.TOPOLOGY_PRESET})")
+    cfg_group.add_argument("--traffic", default=None,
+                           choices=["smooth", "bursty_on_off", "heavy_tail"],
+                           help=f"Traffic profile (default={params.TRAFFIC_PROFILE})")
+    cfg_group.add_argument("--offered-pps", type=float, default=None,
+                           help="Offered packets/sec (default=SWEEP_MAX_PPS)")
+    cfg_group.add_argument("--r-i", type=float, default=None,
+                           help=f"Interference radius R_I in meters (default={CC.R_I})")
+    cfg_group.add_argument("--r-c", type=float, default=None,
+                           help=f"Cluster radius R_C in meters (default={CC.R_C})")
+
+    parser.add_argument("--drift-speed", type=float, default=None,
+                        help="Horizontal X-drift speed per step (auto=1.0 if not set)")
+    parser.add_argument("--no-drift", action="store_true",
+                        help="Disable moving-floor drift effect")
     args = parser.parse_args()
 
     if not args.live and not args.save:
         print("Specify --live and/or --save <path>. Use --help for options.")
         sys.exit(1)
 
-    # Override node count if specified
+    # ---- Apply config overrides ----
     if args.nodes is not None:
         params.N = args.nodes
-
-    # Override mobility model if specified
+    if args.area is not None:
+        params.AREA_X, params.AREA_Y, params.AREA_Z = args.area
     if args.mobility is not None:
         params.MOBILITY_MODEL = args.mobility
+    if args.speed_range is not None:
+        params.V_MIN, params.V_MAX = args.speed_range
+        params.V_MEAN = (params.V_MIN + params.V_MAX) / 2.0
+    if args.fading is not None:
+        params.FADING_MODEL = args.fading
+    if args.topology is not None:
+        params.TOPOLOGY_PRESET = args.topology
+    if args.traffic is not None:
+        params.TRAFFIC_PROFILE = args.traffic
+    if args.offered_pps is not None:
+        params.OFFERED_PPS = args.offered_pps
+    if args.r_i is not None:
+        CC.R_I = args.r_i
+    if args.r_c is not None:
+        CC.R_C = args.r_c
 
     # Ensure MAX_STEPS_PER_EP exists
     if not hasattr(params, "MAX_STEPS_PER_EP"):
         params.MAX_STEPS_PER_EP = args.steps
+
+    # Determine drift speed — auto-enable moving floor unless --no-drift
+    if args.no_drift:
+        drift_speed = 0.0
+    elif args.drift_speed is not None:
+        drift_speed = args.drift_speed
+    else:
+        drift_speed = 1.0  # auto moving-floor
+
+    # Print active config summary
+    print("=" * 60)
+    print("  FANET Visualizer — Active Configuration")
+    print("=" * 60)
+    print(f"  Nodes:      {params.N}")
+    print(f"  Area:       {params.AREA_X} x {params.AREA_Y} x {params.AREA_Z} m")
+    print(f"  Mobility:   {params.MOBILITY_MODEL}")
+    print(f"  Speed:      {params.V_MIN}-{params.V_MAX} m/s")
+    print(f"  Fading:     {params.FADING_MODEL}")
+    print(f"  Topology:   {params.TOPOLOGY_PRESET}")
+    print(f"  Traffic:    {params.TRAFFIC_PROFILE}")
+    print(f"  R_I:        {CC.R_I} m  |  R_C: {CC.R_C} m")
+    print(f"  Drift:      {drift_speed} m/step")
+    print(f"  Steps:      {args.steps}  |  Seed: {args.seed}")
+    print("=" * 60)
 
     # Create environment
     from envs.marl_mac_env import MARLMacEnv
@@ -960,8 +1068,8 @@ def main():
     # Run episode
     print(f"Running episode: {args.steps} steps, {params.N} UAVs, seed={args.seed}...")
     recorder = run_episode(env, max_steps=args.steps, policy_fn=policy_fn, seed=args.seed)
-    recorder.drift_speed = args.drift_speed
-    print(f"Recorded {recorder.n_steps} frames for {recorder.n_uavs} UAVs (drift={args.drift_speed})")
+    recorder.drift_speed = drift_speed
+    print(f"Recorded {recorder.n_steps} frames for {recorder.n_uavs} UAVs (drift={drift_speed})")
 
     # Animate
     if args.view == "3d":
