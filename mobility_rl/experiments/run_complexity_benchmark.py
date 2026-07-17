@@ -100,7 +100,7 @@ def collect_model_stats(cp_dir: str):
     gnn_path = os.path.join(cp_dir, "unified_gnn_marl_model.pth")
     if os.path.exists(gnn_path):
         try:
-            model = torch.load(gnn_path, map_location="cpu")
+            model = torch.load(gnn_path, map_location="cpu", weights_only=True)
             gnn = None
             if isinstance(model, dict):
                 from algorithms.rl.gnn_marl import MAGAT_D3QN_QNetwork

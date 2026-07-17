@@ -335,7 +335,7 @@ def _safe_torch_load(path: str | os.PathLike[str]) -> Any:
     try:
         return torch.load(path, map_location="cpu", weights_only=True)
     except TypeError:
-        return torch.load(path, map_location="cpu")
+        return torch.load(path, map_location="cpu", weights_only=True)
 
 
 def _state_tensor_shape(state: Any, key: str) -> tuple[int, ...] | None:

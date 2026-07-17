@@ -154,7 +154,7 @@ class IQLAgent(BaseValueDecompositionAgent):
         torch.save(self.q_net.state_dict(), path)
 
     def load(self, path):
-        self.q_net.load_state_dict(torch.load(path, map_location=self.device))
+        self.q_net.load_state_dict(torch.load(path, map_location=self.device, weights_only=True))
         self.target_net.load_state_dict(self.q_net.state_dict())
 
 
@@ -201,7 +201,7 @@ class VDNAgent(BaseValueDecompositionAgent):
         torch.save(self.q_net.state_dict(), path)
 
     def load(self, path):
-        self.q_net.load_state_dict(torch.load(path, map_location=self.device))
+        self.q_net.load_state_dict(torch.load(path, map_location=self.device, weights_only=True))
         self.target_net.load_state_dict(self.q_net.state_dict())
 
 
@@ -301,7 +301,7 @@ class QMIXAgent(BaseValueDecompositionAgent):
         torch.save({"q_net": self.q_net.state_dict(), "mixer": self.mixer.state_dict()}, path)
 
     def load(self, path):
-        ckpt = torch.load(path, map_location=self.device)
+        ckpt = torch.load(path, map_location=self.device, weights_only=True)
         self.q_net.load_state_dict(ckpt["q_net"])
         self.target_net.load_state_dict(self.q_net.state_dict())
         self.mixer.load_state_dict(ckpt["mixer"])

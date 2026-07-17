@@ -821,10 +821,15 @@ class MARLMacEnv(ParallelEnv):
             inter_effective_bps = m["inter_bits"] / CC.BURST_TOTAL_TIME
             throughput_per_cluster[agent_name] = local_effective_bps
 
+            total_mac_slots = log.total_slots
+            busy_slots = log.channel_busy_slots
+            idle_slots = max(total_mac_slots - busy_slots, 0)
+            n_members = len(cs.member_indices)
+
             energy_cost = (
                 log.tx_attempts * CC.E_TX_COST
-                + len(cs.member_indices) * CC.E_IDLE_COST
-                + 0.01 * t2_served_sums[cid]
+                + n_members * busy_slots * CC.E_RX_COST
+                + n_members * idle_slots * CC.E_IDLE_COST
             )
 
             reward = compute_cluster_reward(

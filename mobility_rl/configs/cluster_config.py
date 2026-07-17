@@ -77,11 +77,12 @@ class ClusterConfig:
     A_RISK = 0.10    # w_5: supplementary low-energy risk penalization factor (sign: -)
 
     # --------------------------------------------------
-    # Energy model (simple linear drain)
+    # Energy model (PHY-grounded 802.11 constants)
     # --------------------------------------------------
     E_INIT = 100.0
-    E_TX_COST = 0.01
-    E_IDLE_COST = 0.001
+    E_TX_COST = 1.6e-4    # 0.1W TX power × 1.6ms packet duration
+    E_RX_COST = 5.4e-7    # 0.06W RX power × 9μs slot duration
+    E_IDLE_COST = 1.0e-7   # ~10% of RX cost when radio is idle
 
     # --------------------------------------------------
     # Timing

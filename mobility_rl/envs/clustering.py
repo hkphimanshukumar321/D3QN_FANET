@@ -504,7 +504,8 @@ class ClusterManager:
         e = self.energy[leader] / CC.E_INIT
         speed = np.linalg.norm(velocities[leader])
         mob_stab = 1.0 / (1.0 + speed / 30.0)
-        q = queues[leader] / 100.0 if queues is not None else 0.0
+        from configs import config as _params
+        q = queues[leader] / float(_params.QMAX) if queues is not None else 0.0
 
         # Degree: count of neighboring cluster leaders within R_I
         deg = 0
@@ -849,8 +850,11 @@ class ClusterManager:
         return cid
 
     def _drain_energy(self):
-        """Simple linear energy drain per step."""
-        self.energy -= CC.E_IDLE_COST
+        """Drain background listening energy per clustering interval."""
+        slot_time_s = 9e-6  # matches config.SLOT_TIME_S
+        slots_per_burst = int(CC.BURST_TOTAL_TIME / slot_time_s)
+        drain_per_step = slots_per_burst * CC.E_RX_COST * CC.T_CLUSTER
+        self.energy -= drain_per_step
         self.energy = np.clip(self.energy, 0.0, CC.E_INIT)
 
     def _cull_empty_clusters(self):

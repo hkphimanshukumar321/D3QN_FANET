@@ -2,7 +2,9 @@
 # Centralized configuration for Multi-Agent RL (MARL) training and evaluation
 
 import os
+import math
 
+from configs import config as _sim_params
 from configs.cluster_config import ClusterConfig as CC
 
 class MARLConfig:
@@ -17,7 +19,9 @@ class MARLConfig:
     # Training Hyperparameters
     # --------------------------------------------------
     EPISODES = 2000
-    MAX_STEPS_PER_EP = 100     # Steps per episode
+    MAX_STEPS_PER_EP = max(1, math.ceil(
+        _sim_params.SIM_TIME_S / CC.BURST_TOTAL_TIME
+    ))  # Derived: SIM_TIME_S / BURST_TOTAL_TIME
     BATCH_SIZE = 64
     REPLAY_SIZE = 50000
     LR = 1e-3

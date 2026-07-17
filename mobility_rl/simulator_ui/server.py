@@ -7,7 +7,12 @@ import json
 import os
 import sys
 import threading
+import warnings
 from http.server import HTTPServer, SimpleHTTPRequestHandler
+
+warnings.filterwarnings("ignore", category=UserWarning, module="google.protobuf")
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if project_root not in sys.path:

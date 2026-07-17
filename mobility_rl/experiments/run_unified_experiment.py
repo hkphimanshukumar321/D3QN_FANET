@@ -491,7 +491,7 @@ def load_eval_models(cp_dir, log):
                     f"in={magat_kwargs['node_in_dim']}, "
                     f"actions={magat_kwargs['num_actions']}")
                 gnn = MAGAT_D3QN_QNetwork(**magat_kwargs).to(device)
-                gnn.load_state_dict(torch.load(gnn_path, map_location=device))
+                gnn.load_state_dict(torch.load(gnn_path, map_location=device, weights_only=True))
                 gnn.eval()
                 models["MAGAT-D3QN"] = ("marl_gnn", gnn)
                 log("  Loaded MARL: MAGAT-D3QN")

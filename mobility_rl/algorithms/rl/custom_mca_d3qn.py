@@ -231,7 +231,7 @@ class MCABranchingD3QNAgent:
     @classmethod
     def load(cls, path, env, device="cpu"):
         agent = cls(env=env, device=device)
-        ckpt = torch.load(path, map_location=device)
+        ckpt = torch.load(path, map_location=device, weights_only=True)
         agent.q_net.load_state_dict(ckpt["q_net"])
         agent.target_net.load_state_dict(ckpt["target_net"])
         agent.optimizer.load_state_dict(ckpt["optimizer"])

@@ -6,7 +6,7 @@
 # ==========================================
 MAC_SELECTION = ["TDMA", "CSMA_CA", "TABULAR", "DQN", "PPO", "A2C", "MCA_D3QN", "MARL_GNN", "MAPPO"]  # Protocols for RL evaluation
 N = 50                                   # Number of senders / nodes
-SIM_TIME_S = 15                               # Simulation duration (seconds)
+SIM_TIME_S = 600                               # Simulation duration (seconds)
 SLOT_TIME_S = 9e-6                            # Discrete time slot granularity
 PHY_RATE_BPS = 5e6                            # Data rate (channel/link capacity in bps)
 PAYLOAD_BYTES = 1000                      # Packet payload size
