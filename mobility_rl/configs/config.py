@@ -63,7 +63,7 @@ CW_MAX = 1023
 DIFS_SLOTS = 4
 SIFS_SLOTS = 2
 ACK_TIMEOUT_SLOTS = 10
-MAX_RETRY = 1
+MAX_RETRY = 4                                     # Standard 802.11 retry limit
 
 # Features
 RTS_CTS_ENABLED = True

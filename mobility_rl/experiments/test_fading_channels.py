@@ -222,13 +222,13 @@ def run_mac_fading_sweep(output_dir):
             cfg.seed = SEED + pps
             log_tdma = Logger(load_pps=pps, protocol_name="TDMA")
             simulate_tdma_aware(cfg, pps, log_tdma, link_up_schedule, sp_sched,
-                                mobility_dt=SIM_TIME_S)
+                                mobility_dt=global_cfg.MOBILITY_DT)
 
             # --- CSMA/CA ---
             cfg.seed = SEED + pps
             log_csma = Logger(load_pps=pps, protocol_name="CSMA/CA")
             simulate_csma_aware(cfg, pps, log_csma, link_up_schedule, sp_sched,
-                                mobility_dt=SIM_TIME_S)
+                                mobility_dt=global_cfg.MOBILITY_DT)
 
             results.append({
                 "Channel":             ch.name,
