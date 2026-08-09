@@ -1,9 +1,15 @@
 import pytest
+import shutil
 import subprocess
 import os
 import sys
 
+# Skip the entire test when vulture is not available (optional dependency)
+_has_vulture = shutil.which("vulture") is not None
+
+
 @pytest.mark.static
+@pytest.mark.skipif(not _has_vulture, reason="vulture is not installed")
 def test_generate_dead_code_report(project_root, mock_results_dir):
     """
     Static Code Analysis:
@@ -29,8 +35,14 @@ def test_generate_dead_code_report(project_root, mock_results_dir):
     try:
         # Vulture exits with 1 if it finds dead code, which is expected.
         result = subprocess.run(cmd, capture_output=True, text=True)
+    except FileNotFoundError:
+        pytest.skip("vulture binary not found on PATH")
     except Exception as e:
         pytest.fail(f"Execution of vulture failed: {e}")
+    
+    # vulture may not be importable as a module even if the binary isn't on PATH
+    if result.returncode != 0 and "No module named vulture" in result.stderr:
+        pytest.skip("vulture Python module not installed")
         
     with open(report_path, "w") as f:
         f.write("--- INTERNAL VULTURE STATIC DEAD CODE REPORT ---\n")
