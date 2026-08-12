@@ -506,3 +506,8 @@ If you use this framework in your research, please cite:
 
 # # Example for running VDN and MAPPO through the full tuning and evaluation pipeline
 ## ALGOS="vdn,mappo" bash shell_runners/##launch_optuna_then_full_pipeline.sh
+
+
+
+
+////watch -n 2 bash shell_runners/monitor_pipeline.sh results/optuna_then_pipeline/20260809_165642

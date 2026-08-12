@@ -19,6 +19,7 @@ _WANDB_DISABLED = os.environ.get("WANDB_DISABLED", "0") == "1"
 
 _active_run = None
 _login_attempted = False
+_is_child_run = False
 
 
 def _read_api_key_from_file(path: str) -> str:
@@ -178,13 +179,61 @@ def log_image(key, image_path):
     wandb.log({key: wandb.Image(image_path)})
 
 
+def get_active_run():
+    """Return the active wandb run, or None."""
+    return _active_run
+
+
+def ensure_child_run(project="fanet-mac-rl", group=None, run_name=None,
+                     config=None, tags=None):
+    """Create a child wandb run in a subprocess if none exists.
+
+    Call this at the top of multiprocessing worker functions so that
+    per-episode training metrics are actually logged to wandb instead
+    of silently no-oping (because `_active_run` is always None in a
+    forked/spawned child process).
+
+    Parameters
+    ----------
+    project : str
+        wandb project name.
+    group : str | None
+        Group name (should match the parent run's group).
+    run_name : str | None
+        Human-readable name for this child run.
+    config : dict | None
+        Config dict to log as hyperparameters.
+    tags : list[str] | None
+        Tags for this child run.
+
+    Returns
+    -------
+    wandb.Run | None
+    """
+    global _active_run, _is_child_run
+    if _active_run is not None:
+        return _active_run
+    run = init_run(
+        project=project,
+        config=config,
+        run_name=run_name,
+        tags=tags,
+        group=group,
+        reinit=True,
+    )
+    if run is not None:
+        _is_child_run = True
+    return run
+
+
 def finish_run():
     """Finalise and close the active wandb run."""
-    global _active_run
+    global _active_run, _is_child_run
     if not is_enabled() or _active_run is None:
         return
     wandb.finish()
     _active_run = None
+    _is_child_run = False
 
 
 # ============================================================

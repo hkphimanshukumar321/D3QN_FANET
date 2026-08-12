@@ -634,7 +634,7 @@ def _train_sarl_worker(kwargs):
     import pandas as pd
     from envs.sarl_central_env import SARLCentralEnv
     from utils.device_manager import resolve_device
-    from utils.experiment_tracking import WandbMARLLogger
+    from utils.experiment_tracking import WandbMARLLogger, ensure_child_run, finish_run as wandb_finish_child
     
     from configs.sarl_config import RLConfig
     sarl_state = kwargs.get('sarl_state', {})
@@ -644,6 +644,15 @@ def _train_sarl_worker(kwargs):
     pid = os.getpid()
     train_device = resolve_device("train")
     print(f"  [Worker {pid}] SARL training: {algo.upper()} on device: {train_device}")
+
+    # Create a child wandb run for this worker process
+    ensure_child_run(
+        project="fanet-mac-rl",
+        group="unified_experiment",
+        run_name=f"train_sarl_{algo}",
+        config={"type": "sarl", "algo": algo, "timesteps": timesteps, "seed": seed},
+        tags=["training", "sarl", algo],
+    )
 
     if algo == 'tabular':
         return "TABULAR skipped (unsupported for MultiDiscrete centralized burst actions)."
@@ -690,6 +699,7 @@ def _train_sarl_worker(kwargs):
             df = pd.DataFrame({"step": cb.steps, "reward": cb.rewards})
             df.to_csv(os.path.join(csv_dir, f"{algo}_training_rewards.csv"), index=False)
             df.to_csv(os.path.join(cp_dir, f"{algo}_training_rewards.csv"), index=False)
+        wandb_finish_child()
         return f"{algo.upper()} trained."
 
     elif algo == 'mca_d3qn':
@@ -725,6 +735,7 @@ def _train_sarl_worker(kwargs):
             df = pd.DataFrame({"step": cb.steps, "reward": cb.rewards})
             df.to_csv(os.path.join(csv_dir, "mca_d3qn_training_rewards.csv"), index=False)
             df.to_csv(os.path.join(cp_dir, "mca_d3qn_training_rewards.csv"), index=False)
+        wandb_finish_child()
         return f"MCA-D3QN trained."
 
     return f"Unknown SARL algo: {algo}"
@@ -745,7 +756,7 @@ def _train_marl_worker(kwargs):
     from configs.marl_config import MARLConfig
     from configs import config as params
     from utils.device_manager import resolve_device
-    from utils.experiment_tracking import WandbMARLLogger
+    from utils.experiment_tracking import WandbMARLLogger, ensure_child_run, finish_run as wandb_finish_child
     
     marl_state = kwargs.get('marl_state', {})
     for k, v in marl_state.items():
@@ -754,6 +765,15 @@ def _train_marl_worker(kwargs):
     pid = os.getpid()
     train_device = resolve_device("train")
     print(f"  [Worker {pid}] MARL training: {algo.upper()} on device: {train_device}")
+
+    # Create a child wandb run for this worker process
+    ensure_child_run(
+        project="fanet-mac-rl",
+        group="unified_experiment",
+        run_name=f"train_marl_{algo}",
+        config={"type": "marl", "algo": algo, "episodes": episodes, "seed": seed},
+        tags=["training", "marl", algo],
+    )
 
     env = MARLMacEnv(seed=seed)
     N = CC.C_MAX
@@ -880,6 +900,7 @@ def _train_marl_worker(kwargs):
             df = pd.DataFrame({"episode": range(len(ep_rewards)), "reward": ep_rewards})
             df.to_csv(os.path.join(csv_dir, "magat_d3qn_training_rewards.csv"), index=False)
             df.to_csv(os.path.join(cp_dir, "magat_d3qn_training_rewards.csv"), index=False)
+        wandb_finish_child()
         return "MAGAT-D3QN trained."
 
     # --- IQL / VDN / QMIX (shared loop) ---
@@ -967,6 +988,7 @@ def _train_marl_worker(kwargs):
         df = pd.DataFrame({"episode": range(len(ep_rewards)), "reward": ep_rewards})
         df.to_csv(os.path.join(csv_dir, f"{algo}_training_rewards.csv"), index=False)
         df.to_csv(os.path.join(cp_dir, f"{algo}_training_rewards.csv"), index=False)
+    wandb_finish_child()
     return f"{algo.upper()} trained."
 
 
