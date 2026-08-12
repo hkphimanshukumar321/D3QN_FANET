@@ -20,7 +20,7 @@ import optuna
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, project_root)
 
-from experiments.run_pareto_optuna import DEFAULT_OBJECTIVES, OBJECTIVE_DIRECTIONS, resolve_trial_count
+from experiments.run_pareto_optuna import DEFAULT_OBJECTIVES, OBJECTIVE_DIRECTIONS, resolve_trial_count, save_study_artifacts
 
 
 @contextmanager
@@ -105,6 +105,20 @@ def count_complete_trials(
     return sum(1 for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE)
 
 
+def _ensure_study_artifacts(study_name, storage, directions, objectives, study_dir, algo_cli):
+    """Regenerate study-level artifacts if missing (e.g. after a crash)."""
+    reps_csv = os.path.join(study_dir, "representative_pareto_points.csv")
+    if os.path.exists(reps_csv):
+        return  # Already present, nothing to do
+    print(f"[run_optuna_until_target] Regenerating missing study artifacts for {study_name}...")
+    try:
+        study = optuna.load_study(study_name=study_name, storage=storage)
+        save_study_artifacts(study, study_dir, objectives, algo_cli)
+        print(f"[run_optuna_until_target] Study artifacts regenerated successfully.")
+    except Exception as e:
+        print(f"[run_optuna_until_target] WARNING: Could not regenerate artifacts: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run Optuna until target COMPLETE trials is reached")
     parser.add_argument("--algo", required=True)
@@ -163,6 +177,9 @@ def main():
             json.dump(summary, f, indent=2)
         if remaining <= 0:
             print(json.dumps(summary, indent=2))
+            # Regenerate study artifacts in case a prior crash left them missing
+            # (e.g. representative_pareto_points.csv needed by run_best_optuna_pipeline.py)
+            _ensure_study_artifacts(full_study_name, storage, directions, objectives, study_dir, args.algo)
             return
 
     # Build command OUTSIDE the lock so all workers can train concurrently
