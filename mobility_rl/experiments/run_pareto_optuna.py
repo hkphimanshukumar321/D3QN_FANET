@@ -137,9 +137,9 @@ NUM_ANCHORS = len(ANCHOR_WEIGHTS)
 TRIAL_BUDGET = {
     "dry_run": 4,       # 2 anchor + 2 Optuna
     "pilot": 16,
-    "non_gnn": 48,      # 15 anchor + 33 Optuna
+    "non_gnn": 24,      # 15 anchor + 9 Optuna  (was 48 — excessive for shared GPU pods)
     "magat_d3qn": 24,   # 15 anchor + 9 Optuna
-    "paper_quality": 64,
+    "paper_quality": 32, # 15 anchor + 17 Optuna (was 64)
 }
 
 # Objective definitions
