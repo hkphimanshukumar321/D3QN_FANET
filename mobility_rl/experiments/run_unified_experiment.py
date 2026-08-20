@@ -1819,6 +1819,7 @@ def run_unified_experiment(
     sweep_max_pps=None,
     sweep_steps=None,
     stochastic_eval=False,
+    skip_ablations=False,
 ):
     """Run the full unified SARL+MARL experiment pipeline.
 
@@ -1961,8 +1962,12 @@ def run_unified_experiment(
     step4_reward_curves(out_dir, log)
 
     # Step 5
-    ablation_dir = os.path.join(out_dir, "ablation")
-    step5_ablations(eval_df, pps_list, cp_dir, out_dir, log)
+    if not skip_ablations:
+        ablation_dir = os.path.join(out_dir, "ablation")
+        step5_ablations(eval_df, pps_list, cp_dir, out_dir, log)
+    else:
+        ablation_dir = None
+        log("  Step 5: Ablations SKIPPED (tuning mode)")
 
     # Step 6
     step6_summary(eval_df, baseline_df, out_dir, log)

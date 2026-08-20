@@ -511,3 +511,19 @@ If you use this framework in your research, please cite:
 
 
 ////watch -n 2 bash shell_runners/monitor_pipeline.sh results/optuna_then_pipeline/20260809_165642
+
+
+//# Live monitor (refreshes every 20s)
+bash shell_runners/monitor_pipeline.sh results/optuna_then_pipeline/20260809_165642
+
+//# Tail the launcher log (main pipeline)
+tail -f results/optuna_then_pipeline/20260809_165642/logs/launcher.log
+
+//# Tail a specific algo log
+tail -f results/optuna_then_pipeline/20260809_165642/logs/optuna_ppo.log
+
+//# Check all status files at a glance
+cat results/optuna_then_pipeline/20260809_165642/status/*.status
+
+//# List all available logs
+ls -lt results/optuna_then_pipeline/20260809_165642/logs/

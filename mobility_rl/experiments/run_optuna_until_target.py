@@ -140,6 +140,12 @@ def main():
     parser.add_argument("--sweep-min-pps", type=int, default=None)
     parser.add_argument("--sweep-max-pps", type=int, default=None)
     parser.add_argument("--sweep-steps", type=int, default=None)
+    parser.add_argument("--tuning-sim-time", type=float, default=None,
+                        help="Override SIM_TIME_S during tuning (e.g. 150).")
+    parser.add_argument("--tuning-episodes", type=int, default=None,
+                        help="Override MARL EPISODES during tuning (e.g. 1000).")
+    parser.add_argument("--skip-ablations", action="store_true",
+                        help="Skip ablation studies during tuning trials.")
     args = parser.parse_args()
 
     objectives = list(args.objectives or DEFAULT_OBJECTIVES)
@@ -215,6 +221,12 @@ def main():
         cmd.extend(["--sweep-max-pps", str(args.sweep_max_pps)])
     if args.sweep_steps is not None:
         cmd.extend(["--sweep-steps", str(args.sweep_steps)])
+    if getattr(args, "tuning_sim_time", None) is not None:
+        cmd.extend(["--tuning-sim-time", str(args.tuning_sim_time)])
+    if getattr(args, "tuning_episodes", None) is not None:
+        cmd.extend(["--tuning-episodes", str(args.tuning_episodes)])
+    if getattr(args, "skip_ablations", False):
+        cmd.append("--skip-ablations")
 
     subprocess.run(cmd, check=True)
 

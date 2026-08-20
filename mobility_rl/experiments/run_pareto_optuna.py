@@ -378,8 +378,21 @@ def create_objective(
                 if k in extra_kwargs and extra_kwargs[k] is not None:
                     run_kwargs[k] = extra_kwargs[k]
 
-            # Set seed per trial
+            # --- Tuning-mode speed overrides ---
+            # Temporarily reduce SIM_TIME_S and EPISODES for faster
+            # Optuna search. The final production run uses full values.
             from configs import config as params
+            orig_sim_time = params.SIM_TIME_S
+            orig_episodes = MARLConfig.EPISODES
+
+            if extra_kwargs.get("tuning_sim_time") is not None:
+                params.SIM_TIME_S = int(extra_kwargs["tuning_sim_time"])
+            if extra_kwargs.get("tuning_episodes") is not None:
+                MARLConfig.EPISODES = int(extra_kwargs["tuning_episodes"])
+            if extra_kwargs.get("skip_ablations"):
+                run_kwargs["skip_ablations"] = True
+
+            # Set seed per trial
             params.SEED = base_seed + trial_num
 
             result = run_unified_experiment(**run_kwargs)
@@ -391,6 +404,9 @@ def create_objective(
                 setattr(RLConfig, k, v)
             for k, v in orig_run_flags.items():
                 setattr(params, k, v)
+            # Restore tuning-mode overrides
+            params.SIM_TIME_S = orig_sim_time
+            MARLConfig.EPISODES = orig_episodes
 
             # =========================================================
             # 4. Aggregate metrics from eval CSV
@@ -1003,6 +1019,14 @@ Examples:
     p.add_argument("--intra-trial-workers", type=int, default=1,
                    help="Workers within each trial. Default: 1.")
 
+    # Tuning-mode speed overrides (reduced params for faster Optuna search)
+    p.add_argument("--tuning-sim-time", type=float, default=None,
+                   help="Override SIM_TIME_S during tuning (e.g. 150). Full sim used in final run.")
+    p.add_argument("--tuning-episodes", type=int, default=None,
+                   help="Override MARL EPISODES during tuning (e.g. 1000).")
+    p.add_argument("--skip-ablations", action="store_true",
+                   help="Skip ablation studies during tuning trials.")
+
     return p
 
 
@@ -1047,6 +1071,9 @@ def main():
         "sweep_min_pps": args.sweep_min_pps,
         "sweep_max_pps": args.sweep_max_pps,
         "sweep_steps": args.sweep_steps,
+        "tuning_sim_time": getattr(args, "tuning_sim_time", None),
+        "tuning_episodes": getattr(args, "tuning_episodes", None),
+        "skip_ablations": getattr(args, "skip_ablations", False),
     }
 
     print("=" * 70)
