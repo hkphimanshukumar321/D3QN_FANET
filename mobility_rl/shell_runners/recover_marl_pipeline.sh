@@ -47,17 +47,19 @@ TUNING_SIM_TIME="${TUNING_SIM_TIME:-150}"
 TUNING_EPISODES="${TUNING_EPISODES:-500}"
 N_TRIALS="${N_TRIALS:-24}"
 
-# --- Parallelism ---
+# --- Parallelism (tuned from profiling: env.step = 97-99% of wall-clock) ---
 # Phase 1: Non-GNN MARL algos (IQL, VDN, QMIX, MAPPO)
-#   These are CPU-trainable MLPs. Each algo runs N concurrent Optuna trials.
-#   4 algos × 4 trials = 16 concurrent training processes → ~32 cores used
-#   Remaining cores handle the environment simulation (which is CPU-bound).
-PHASE1_JOBS_PER_ALGO="${PHASE1_JOBS_PER_ALGO:-4}"
+#   Profiled: IQL env.step = 98.9%, NN = 1.1%. GPU essentially idle.
+#   Each trial is single-core (Python env sim). With 96 cores:
+#   4 algos × 20 trials = 80 concurrent processes → 80 of 96 cores utilized.
+#   Memory: ~1GB per process × 80 = ~80GB (well within 1.5TB RAM).
+PHASE1_JOBS_PER_ALGO="${PHASE1_JOBS_PER_ALGO:-20}"
 
-# Phase 2: MAGAT-D3QN (GNN, needs GPU)
-#   GNN training is GPU-bound. GPU memory for MAGAT-D3QN with GNN_HEADS=2-8
-#   and HIDDEN_DIM=32-128 fits ~2-4 concurrent trials on a 16GB V100.
-PHASE2_JOBS="${PHASE2_JOBS:-2}"
+# Phase 2: MAGAT-D3QN (GNN)
+#   Profiled: env.step = 96.8%, GNN forward = 2.5%. Still CPU-bound!
+#   GPU VRAM per trial ≈ 200MB → 32GB V100 easily handles 16 concurrent.
+#   CPU is the real constraint: 16 trials × 1 core = 16 cores.
+PHASE2_JOBS="${PHASE2_JOBS:-16}"
 
 # --- Algorithm lists ---
 PHASE1_ALGOS="iql vdn qmix mappo"
