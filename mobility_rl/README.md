@@ -527,3 +527,17 @@ cat results/optuna_then_pipeline/20260809_165642/status/*.status
 
 //# List all available logs
 ls -lt results/optuna_then_pipeline/20260809_165642/logs/
+
+
+##Take  2  
+  Monitor progress:
+bash
+
+python utils/monitor_optuna_eta.py . --force-target 12
+After all 5 complete — run final full-quality pipeline:
+bash
+
+ALGOS=iql,vdn,qmix,mappo,magat_d3qn \
+STUDY_NAME=journal_tune \
+FORCE_RETRAIN=1 \
+bash shell_runners/launch_optuna_then_full_pipeline.sh

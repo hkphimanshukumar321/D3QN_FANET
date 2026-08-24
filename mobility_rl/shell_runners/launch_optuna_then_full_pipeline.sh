@@ -94,7 +94,12 @@ run_stage() {
     ' _ "$status_file" "$@" > "$log_file" 2>&1 &
     local pid=$!
     printf "%s\n" "$pid" > "$pid_file"
-    wait "$pid"
+    local wait_rc=0
+    wait "$pid" || wait_rc=$?
+    if [[ "$wait_rc" -ne 0 ]]; then
+        echo "WARNING: stage '$name' exited with code $wait_rc (continuing pipeline)" >&2
+    fi
+    return "$wait_rc"
 }
 
 resolve_algos() {
@@ -103,11 +108,11 @@ resolve_algos() {
         raw="$ALGO"
     fi
     if [[ "$raw" == "all" || "$raw" == "paper" ]]; then
-        echo "ppo a2c mca_d3qn iql vdn qmix magat_d3qn"
+        echo "ppo a2c mca_d3qn iql vdn qmix mappo magat_d3qn"
         return
     fi
     if [[ "$raw" == "all_with_tabular" ]]; then
-        echo "tabular dqn ppo a2c mca_d3qn iql vdn qmix magat_d3qn"
+        echo "tabular dqn ppo a2c mca_d3qn iql vdn qmix mappo magat_d3qn"
         return
     fi
     echo "$raw" | tr ',' ' '
@@ -246,13 +251,13 @@ for CURRENT_ALGO in $ALGO_LIST; do
 
     OPTUNA_ARGS=(--algo "$CURRENT_ALGO" "${COMMON_OPTUNA_ARGS[@]}")
     run_stage "optuna_${CURRENT_ALGO}" \
-        "$PYTHON_BIN" experiments/run_optuna_until_target.py "${OPTUNA_ARGS[@]}"
+        "$PYTHON_BIN" experiments/run_optuna_until_target.py "${OPTUNA_ARGS[@]}" || true
 
     STUDY_DIR="results/optuna/${STUDY_NAME}_${CURRENT_ALGO}"
     LAST_STUDY_DIR="$STUDY_DIR"
     if [[ ! -d "$STUDY_DIR" ]]; then
-        echo "Expected study dir not found: $STUDY_DIR"
-        exit 1
+        echo "WARNING: Study dir not found for $CURRENT_ALGO: $STUDY_DIR (skipping)" >&2
+        continue
     fi
 
     if [[ -f "$STUDY_DIR/target_trials_status.json" ]]; then
@@ -281,11 +286,11 @@ for CURRENT_ALGO in $ALGO_LIST; do
     fi
 
     run_stage "final_unified_${CURRENT_ALGO}" \
-        "$PYTHON_BIN" experiments/run_best_optuna_pipeline.py "${BEST_ARGS[@]}"
+        "$PYTHON_BIN" experiments/run_best_optuna_pipeline.py "${BEST_ARGS[@]}" || true
 
     if [[ ! -f "$ARTIFACT_JSON" ]]; then
-        echo "Final artifact JSON not created: $ARTIFACT_JSON"
-        exit 1
+        echo "WARNING: Final artifact JSON not created for $CURRENT_ALGO: $ARTIFACT_JSON (skipping)" >&2
+        continue
     fi
 
     CURRENT_CHECKPOINT_DIR="$("$PYTHON_BIN" - <<'PY'
