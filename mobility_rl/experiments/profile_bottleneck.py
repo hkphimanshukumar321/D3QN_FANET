@@ -89,6 +89,17 @@ def profile_algo(algo: str, episodes: int):
     else:
         raise ValueError(f"Unknown algo: {algo}")
 
+    # --- GPU VRAM baseline ---
+    gpu_available = torch.cuda.is_available()
+    if gpu_available:
+        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.synchronize()
+        vram_baseline_mb = torch.cuda.memory_allocated() / (1024**2)
+        vram_samples = []
+    else:
+        vram_baseline_mb = 0.0
+        vram_samples = []
+
     # --- Profile ---
     env = MARLMacEnv(seed=42)
     t_env_reset = 0.0
@@ -154,10 +165,15 @@ def profile_algo(algo: str, episodes: int):
                 obs_all = next_obs_all
             t_other += time.perf_counter() - t0
 
+            # Sample GPU VRAM
+            if gpu_available:
+                vram_samples.append(torch.cuda.memory_allocated() / (1024**2))
+
             total_steps += 1
 
         if (ep + 1) % 10 == 0:
-            print(f"  Episode {ep+1}/{episodes} done ({total_steps} steps)")
+            vram_now = f", VRAM={torch.cuda.memory_allocated()/(1024**2):.1f}MB" if gpu_available else ""
+            print(f"  Episode {ep+1}/{episodes} done ({total_steps} steps{vram_now})")
 
     # --- Report ---
     total = t_env_reset + t_env_step + t_action_select + t_train + t_other
@@ -186,6 +202,32 @@ def profile_algo(algo: str, episodes: int):
     nn_pct = (t_action_select + t_train) / total * 100
     print(f"  >>> CPU-bound (env sim):  {cpu_pct:.1f}%")
     print(f"  >>> NN-bound (GPU/CPU):   {nn_pct:.1f}%")
+    print()
+
+    # --- GPU VRAM Report ---
+    if gpu_available:
+        peak_vram_mb = torch.cuda.max_memory_allocated() / (1024**2)
+        avg_vram_mb = np.mean(vram_samples) if vram_samples else 0.0
+        max_vram_mb = max(vram_samples) if vram_samples else 0.0
+        total_gpu_mb = gpu_info["devices"][0].get("vram_gb", 32) * 1024
+        # Reserve 2GB for system/driver overhead
+        usable_mb = total_gpu_mb - 2048
+        max_concurrent = int(usable_mb / max(peak_vram_mb, 1))
+
+        print(f"  === GPU VRAM PER TRIAL ===")
+        print(f"  {'Baseline (model load)':<30} {vram_baseline_mb:>10.1f} MB")
+        print(f"  {'Peak (torch.cuda.max_memory)':<30} {peak_vram_mb:>10.1f} MB")
+        print(f"  {'Avg during training':<30} {avg_vram_mb:>10.1f} MB")
+        print(f"  {'Max sampled':<30} {max_vram_mb:>10.1f} MB")
+        print()
+        print(f"  GPU total: {total_gpu_mb:.0f} MB | Usable (minus 2GB reserve): {usable_mb:.0f} MB")
+        print(f"  >>> Max concurrent trials on this GPU: {max_concurrent}")
+        print(f"      ({usable_mb:.0f} MB usable / {peak_vram_mb:.1f} MB per trial)")
+    else:
+        print(f"  No GPU — all trials run on CPU. Concurrency limited by CPU cores only.")
+        peak_vram_mb = 0
+        max_concurrent = 96  # CPU-only
+
     print()
     if cpu_pct > 60:
         print(f"  VERDICT: CPU-bound — parallelizing across CPU cores will help most.")
