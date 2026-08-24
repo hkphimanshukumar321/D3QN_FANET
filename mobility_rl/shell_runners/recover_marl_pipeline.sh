@@ -57,9 +57,9 @@ PHASE1_JOBS_PER_ALGO="${PHASE1_JOBS_PER_ALGO:-20}"
 
 # Phase 2: MAGAT-D3QN (GNN)
 #   Profiled: env.step = 96.8%, GNN forward = 2.5%. Still CPU-bound!
-#   GPU VRAM per trial ≈ 200MB → 32GB V100 easily handles 16 concurrent.
-#   CPU is the real constraint: 16 trials × 1 core = 16 cores.
-PHASE2_JOBS="${PHASE2_JOBS:-16}"
+#   Measured: 1,204 MB VRAM per trial → 20 × 1,200 = 24,000 MB (73% of V100-32GB).
+#   CPU is the real constraint: 20 trials × 1 core = 20 cores.
+PHASE2_JOBS="${PHASE2_JOBS:-20}"
 
 # --- Algorithm lists ---
 PHASE1_ALGOS="iql vdn qmix mappo"
