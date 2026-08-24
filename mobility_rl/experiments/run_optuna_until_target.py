@@ -188,55 +188,94 @@ def main():
             _ensure_study_artifacts(full_study_name, storage, directions, objectives, study_dir, args.algo)
             return
 
-    # Build command OUTSIDE the lock so all workers can train concurrently
-    cmd = [
-        sys.executable,
-        os.path.join(project_root, "experiments", "run_pareto_optuna.py"),
-        "--algo", args.algo,
-        "--study-name", args.study_name,
-        "--objectives", *objectives,
-        "--n-trials", str(remaining),
-        "--seed", str(args.seed),
-        "--n-jobs", str(args.n_jobs),
-        "--max-concurrent-gpu-trials", str(args.max_concurrent_gpu_trials),
-        "--intra-trial-workers", str(args.intra_trial_workers),
-    ]
-    if args.include_inference:
-        cmd.append("--include-inference")
-    if args.dry_run:
-        cmd.append("--dry-run")
-    if args.force_retrain:
-        cmd.append("--force-retrain")
-    if args.gpu_ids is not None:
-        cmd.extend(["--gpu-ids", args.gpu_ids])
-    if args.phy_rate_mbps is not None:
-        cmd.extend(["--phy-rate-mbps", str(args.phy_rate_mbps)])
-    if args.nodes is not None:
-        cmd.extend(["--nodes", str(args.nodes)])
-    if args.qmax is not None:
-        cmd.extend(["--qmax", str(args.qmax)])
-    if args.sweep_min_pps is not None:
-        cmd.extend(["--sweep-min-pps", str(args.sweep_min_pps)])
-    if args.sweep_max_pps is not None:
-        cmd.extend(["--sweep-max-pps", str(args.sweep_max_pps)])
-    if args.sweep_steps is not None:
-        cmd.extend(["--sweep-steps", str(args.sweep_steps)])
-    if getattr(args, "tuning_sim_time", None) is not None:
-        cmd.extend(["--tuning-sim-time", str(args.tuning_sim_time)])
-    if getattr(args, "tuning_episodes", None) is not None:
-        cmd.extend(["--tuning-episodes", str(args.tuning_episodes)])
-    if getattr(args, "skip_ablations", False):
-        cmd.append("--skip-ablations")
+    # ----------------------------------------------------------------
+    # Retry loop: re-check COMPLETE trials after each batch.
+    # If trials fail (OOM, BrokenPipeError), remaining > 0 and we
+    # re-launch with only the deficit.  Cap at MAX_RETRY_ROUNDS to
+    # prevent infinite loops when an algo is fundamentally broken.
+    # ----------------------------------------------------------------
+    MAX_RETRY_ROUNDS = 5
+    retry_round = 0
 
-    subprocess.run(cmd, check=True)
+    while remaining > 0 and retry_round < MAX_RETRY_ROUNDS:
+        retry_round += 1
+        print(f"\n[run_optuna_until_target] Round {retry_round}/{MAX_RETRY_ROUNDS}: "
+              f"{complete} COMPLETE, {remaining} remaining to reach {target_complete}")
 
-    # Update summary after training completes
-    with file_lock(lock_path):
-        complete_after = count_complete_trials(full_study_name, storage, directions, objectives)
-        summary["complete_after"] = complete_after
-        summary["remaining_after"] = max(0, target_complete - complete_after)
-        with open(os.path.join(study_dir, "target_trials_status.json"), "w", encoding="utf-8") as f:
-            json.dump(summary, f, indent=2)
+        # Build command OUTSIDE the lock so all workers can train concurrently
+        cmd = [
+            sys.executable,
+            os.path.join(project_root, "experiments", "run_pareto_optuna.py"),
+            "--algo", args.algo,
+            "--study-name", args.study_name,
+            "--objectives", *objectives,
+            "--n-trials", str(remaining),
+            "--seed", str(args.seed),
+            "--n-jobs", str(args.n_jobs),
+            "--max-concurrent-gpu-trials", str(args.max_concurrent_gpu_trials),
+            "--intra-trial-workers", str(args.intra_trial_workers),
+        ]
+        if args.include_inference:
+            cmd.append("--include-inference")
+        if args.dry_run:
+            cmd.append("--dry-run")
+        if args.force_retrain:
+            cmd.append("--force-retrain")
+        if args.gpu_ids is not None:
+            cmd.extend(["--gpu-ids", args.gpu_ids])
+        if args.phy_rate_mbps is not None:
+            cmd.extend(["--phy-rate-mbps", str(args.phy_rate_mbps)])
+        if args.nodes is not None:
+            cmd.extend(["--nodes", str(args.nodes)])
+        if args.qmax is not None:
+            cmd.extend(["--qmax", str(args.qmax)])
+        if args.sweep_min_pps is not None:
+            cmd.extend(["--sweep-min-pps", str(args.sweep_min_pps)])
+        if args.sweep_max_pps is not None:
+            cmd.extend(["--sweep-max-pps", str(args.sweep_max_pps)])
+        if args.sweep_steps is not None:
+            cmd.extend(["--sweep-steps", str(args.sweep_steps)])
+        if getattr(args, "tuning_sim_time", None) is not None:
+            cmd.extend(["--tuning-sim-time", str(args.tuning_sim_time)])
+        if getattr(args, "tuning_episodes", None) is not None:
+            cmd.extend(["--tuning-episodes", str(args.tuning_episodes)])
+        if getattr(args, "skip_ablations", False):
+            cmd.append("--skip-ablations")
+
+        # Don't use check=True: Optuna handles trial failures internally.
+        # The subprocess may exit non-zero if ALL trials fail, but partial
+        # completions are still saved in SQLite.
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            print(f"[run_optuna_until_target] WARNING: subprocess exited with rc={result.returncode}")
+
+        # Re-check how many COMPLETE trials we now have
+        with file_lock(lock_path):
+            complete = count_complete_trials(full_study_name, storage, directions, objectives)
+            remaining = max(0, target_complete - complete)
+            summary["complete_after_round"] = complete
+            summary["remaining_after_round"] = remaining
+            summary["retry_round"] = retry_round
+            with open(os.path.join(study_dir, "target_trials_status.json"), "w", encoding="utf-8") as f:
+                json.dump(summary, f, indent=2)
+
+        if remaining <= 0:
+            print(f"[run_optuna_until_target] Target reached: {complete} COMPLETE trials")
+            break
+
+        # If no progress was made (all new trials failed), warn but retry
+        prev_complete = summary.get("complete_before", 0)
+        if complete <= prev_complete:
+            print(f"[run_optuna_until_target] WARNING: No new COMPLETE trials this round "
+                  f"({complete} == {prev_complete}). Will retry {MAX_RETRY_ROUNDS - retry_round} more times.")
+
+    if remaining > 0:
+        print(f"[run_optuna_until_target] ERROR: After {MAX_RETRY_ROUNDS} rounds, "
+              f"only {complete}/{target_complete} COMPLETE trials. {remaining} still missing.")
+        sys.exit(1)
+
+    # Ensure study artifacts exist
+    _ensure_study_artifacts(full_study_name, storage, directions, objectives, study_dir, args.algo)
 
 
 if __name__ == "__main__":

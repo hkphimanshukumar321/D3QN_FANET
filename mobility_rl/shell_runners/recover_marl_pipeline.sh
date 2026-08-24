@@ -86,31 +86,49 @@ run_algo() {
     local algo="$1"
     local n_jobs="$2"
     local gpu_trials="$3"
+    local MAX_RETRIES="${MAX_RETRIES:-3}"
+    local RETRY_BACKOFF="${RETRY_BACKOFF:-60}"
 
-    echo "  [$algo] Starting (n_jobs=$n_jobs, gpu_trials=$gpu_trials) — $(date '+%H:%M:%S')"
+    echo "  [$algo] Starting (n_jobs=$n_jobs, gpu_trials=$gpu_trials, max_retries=$MAX_RETRIES) — $(date '+%H:%M:%S')"
 
-    # --- Step 1: Optuna tuning ---
-    printf "RUNNING\n" > "$STATUS_DIR/optuna_${algo}.status"
+    # --- Step 1: Optuna tuning (with retry) ---
+    local tuning_ok=false
+    for attempt in $(seq 1 "$MAX_RETRIES"); do
+        printf "RUNNING:attempt_%s\n" "$attempt" > "$STATUS_DIR/optuna_${algo}.status"
+        echo "  [$algo] Tuning attempt $attempt/$MAX_RETRIES — $(date '+%H:%M:%S')"
 
-    "$PYTHON_BIN" experiments/run_optuna_until_target.py \
-        --algo "$algo" \
-        --study-name "$STUDY_NAME" \
-        --target-complete-trials "$N_TRIALS" \
-        --force-retrain \
-        --n-jobs "$n_jobs" \
-        --max-concurrent-gpu-trials "$gpu_trials" \
-        --tuning-sim-time "$TUNING_SIM_TIME" \
-        --tuning-episodes "$TUNING_EPISODES" \
-        --skip-ablations \
-        > "$LOG_DIR/optuna_${algo}.log" 2>&1
-    local rc=$?
+        "$PYTHON_BIN" experiments/run_optuna_until_target.py \
+            --algo "$algo" \
+            --study-name "$STUDY_NAME" \
+            --target-complete-trials "$N_TRIALS" \
+            --force-retrain \
+            --n-jobs "$n_jobs" \
+            --max-concurrent-gpu-trials "$gpu_trials" \
+            --tuning-sim-time "$TUNING_SIM_TIME" \
+            --tuning-episodes "$TUNING_EPISODES" \
+            --skip-ablations \
+            >> "$LOG_DIR/optuna_${algo}.log" 2>&1
+        local rc=$?
 
-    if [[ $rc -ne 0 ]]; then
-        printf "FAILED:%s\n" "$rc" > "$STATUS_DIR/optuna_${algo}.status"
-        echo "  [$algo] TUNING FAILED (rc=$rc)" >&2
-        return $rc
+        if [[ $rc -eq 0 ]]; then
+            tuning_ok=true
+            printf "COMPLETED\n" > "$STATUS_DIR/optuna_${algo}.status"
+            echo "  [$algo] Tuning COMPLETED on attempt $attempt"
+            break
+        fi
+
+        echo "  [$algo] Tuning FAILED (rc=$rc) on attempt $attempt. " >&2
+        if [[ $attempt -lt $MAX_RETRIES ]]; then
+            echo "  [$algo] Retrying in ${RETRY_BACKOFF}s..." >&2
+            sleep "$RETRY_BACKOFF"
+        fi
+    done
+
+    if [[ "$tuning_ok" != "true" ]]; then
+        printf "FAILED:tuning_exhausted\n" > "$STATUS_DIR/optuna_${algo}.status"
+        echo "  [$algo] TUNING FAILED after $MAX_RETRIES attempts" >&2
+        return 1
     fi
-    printf "COMPLETED\n" > "$STATUS_DIR/optuna_${algo}.status"
 
     local study_dir="results/optuna/${STUDY_NAME}_${algo}"
     if [[ ! -d "$study_dir" ]]; then
@@ -118,24 +136,40 @@ run_algo() {
         return 1
     fi
 
-    # --- Step 2: Final unified eval (full params, no speed overrides) ---
+    # --- Step 2: Final unified eval (with retry) ---
     local artifact_json="$PIPELINE_ROOT/final_artifacts_${algo}.json"
-    printf "RUNNING\n" > "$STATUS_DIR/final_unified_${algo}.status"
+    local eval_ok=false
+    for attempt in $(seq 1 "$MAX_RETRIES"); do
+        printf "RUNNING:final_attempt_%s\n" "$attempt" > "$STATUS_DIR/final_unified_${algo}.status"
+        echo "  [$algo] Final eval attempt $attempt/$MAX_RETRIES — $(date '+%H:%M:%S')"
 
-    "$PYTHON_BIN" experiments/run_best_optuna_pipeline.py \
-        --study-dir "$study_dir" \
-        --representative-label "$REPRESENTATIVE_LABEL" \
-        --artifact-json "$artifact_json" \
-        --force-retrain \
-        > "$LOG_DIR/final_unified_${algo}.log" 2>&1
-    rc=$?
+        "$PYTHON_BIN" experiments/run_best_optuna_pipeline.py \
+            --study-dir "$study_dir" \
+            --representative-label "$REPRESENTATIVE_LABEL" \
+            --artifact-json "$artifact_json" \
+            --force-retrain \
+            >> "$LOG_DIR/final_unified_${algo}.log" 2>&1
+        rc=$?
 
-    if [[ $rc -ne 0 ]]; then
-        printf "FAILED:%s\n" "$rc" > "$STATUS_DIR/final_unified_${algo}.status"
-        echo "  [$algo] EVAL FAILED (rc=$rc)" >&2
-        return $rc
+        if [[ $rc -eq 0 ]]; then
+            eval_ok=true
+            printf "COMPLETED\n" > "$STATUS_DIR/final_unified_${algo}.status"
+            echo "  [$algo] Final eval COMPLETED on attempt $attempt"
+            break
+        fi
+
+        echo "  [$algo] Final eval FAILED (rc=$rc) on attempt $attempt" >&2
+        if [[ $attempt -lt $MAX_RETRIES ]]; then
+            echo "  [$algo] Retrying in ${RETRY_BACKOFF}s..." >&2
+            sleep "$RETRY_BACKOFF"
+        fi
+    done
+
+    if [[ "$eval_ok" != "true" ]]; then
+        printf "FAILED:eval_exhausted\n" > "$STATUS_DIR/final_unified_${algo}.status"
+        echo "  [$algo] FINAL EVAL FAILED after $MAX_RETRIES attempts" >&2
+        return 1
     fi
-    printf "COMPLETED\n" > "$STATUS_DIR/final_unified_${algo}.status"
 
     # --- Step 3: Merge checkpoints ---
     if [[ -f "$artifact_json" ]]; then
