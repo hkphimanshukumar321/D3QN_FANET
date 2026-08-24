@@ -59,7 +59,7 @@ def profile_algo(algo: str, episodes: int):
     if algo == "magat_d3qn":
         from algorithms.rl.gnn_marl import MAGAT_D3QN_QNetwork
         model = MAGAT_D3QN_QNetwork(
-            obs_dim=obs_dim, num_actions=num_actions,
+            node_in_dim=obs_dim, num_actions=num_actions,
             hidden_dim=MARLConfig.HIDDEN_DIM,
             heads=MARLConfig.GNN_HEADS,
             use_gru=MARLConfig.MAGAT_USE_GRU,
@@ -67,15 +67,15 @@ def profile_algo(algo: str, episodes: int):
         optimizer = torch.optim.Adam(model.parameters(), lr=MARLConfig.LR)
         is_gnn = True
     elif algo == "iql":
-        from algorithms.rl.iql_agent import IQLAgent
+        from algorithms.rl.marl_baselines import IQLAgent
         agent = IQLAgent(**common)
         is_gnn = False
     elif algo == "vdn":
-        from algorithms.rl.vdn_agent import VDNAgent
+        from algorithms.rl.marl_baselines import VDNAgent
         agent = VDNAgent(**common)
         is_gnn = False
     elif algo == "qmix":
-        from algorithms.rl.qmix_agent import QMIXAgent
+        from algorithms.rl.marl_baselines import QMIXAgent
         agent = QMIXAgent(**common, state_dim=obs_dim * n_agents)
         is_gnn = False
     elif algo == "mappo":
@@ -134,11 +134,16 @@ def profile_algo(algo: str, episodes: int):
             next_obs, rewards, terms, truncs, infos = env.step(actions_dict)
             t_env_step += time.perf_counter() - t0
 
-            # --- Training step ---
+            # --- Store transitions + Training step ---
             t0 = time.perf_counter()
-            if not is_gnn and hasattr(agent, 'replay') and len(getattr(agent, 'replay', [])) > MARLConfig.BATCH_SIZE:
-                if hasattr(agent, 'train_step'):
-                    agent.train_step()
+            if not is_gnn:
+                next_obs_all = np.stack([next_obs[a] for a in env.possible_agents])
+                reward_arr = np.array([rewards.get(a, 0.0) for a in env.possible_agents])
+                done = not env.agents
+                if hasattr(agent, 'store'):
+                    agent.store(obs_all, actions_list, reward_arr, next_obs_all, done, alive_mask)
+                if hasattr(agent, 'update') and hasattr(agent, 'replay') and len(agent.replay) > MARLConfig.BATCH_SIZE:
+                    agent.update()
             t_train += time.perf_counter() - t0
 
             # Bookkeeping
@@ -146,7 +151,7 @@ def profile_algo(algo: str, episodes: int):
             if is_gnn:
                 x, edge_index, alive_mask = env.get_global_graph_state()
             else:
-                obs_all = np.stack([next_obs[a] for a in env.possible_agents])
+                obs_all = next_obs_all
             t_other += time.perf_counter() - t0
 
             total_steps += 1
