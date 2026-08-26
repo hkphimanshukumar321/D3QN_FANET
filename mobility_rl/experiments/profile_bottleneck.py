@@ -58,13 +58,22 @@ def profile_algo(algo: str, episodes: int):
 
     if algo == "magat_d3qn":
         from algorithms.rl.gnn_marl import MAGAT_D3QN_QNetwork
+        from collections import deque
         model = MAGAT_D3QN_QNetwork(
             node_in_dim=obs_dim, num_actions=num_actions,
             hidden_dim=MARLConfig.HIDDEN_DIM,
             heads=MARLConfig.GNN_HEADS,
             use_gru=MARLConfig.MAGAT_USE_GRU,
         ).to(device_str)
+        target_model = MAGAT_D3QN_QNetwork(
+            node_in_dim=obs_dim, num_actions=num_actions,
+            hidden_dim=MARLConfig.HIDDEN_DIM,
+            heads=MARLConfig.GNN_HEADS,
+            use_gru=MARLConfig.MAGAT_USE_GRU,
+        ).to(device_str)
+        target_model.load_state_dict(model.state_dict())
         optimizer = torch.optim.Adam(model.parameters(), lr=MARLConfig.LR)
+        memory = deque(maxlen=MARLConfig.REPLAY_SIZE)
         is_gnn = True
     elif algo == "iql":
         from algorithms.rl.marl_baselines import IQLAgent
@@ -147,7 +156,55 @@ def profile_algo(algo: str, episodes: int):
 
             # --- Store transitions + Training step ---
             t0 = time.perf_counter()
-            if not is_gnn:
+            if is_gnn:
+                from torch_geometric.data import Data, Batch as PyGBatch
+                import random
+                next_x, next_ei, next_alive = env.get_global_graph_state()
+                act_list = np.array([actions_dict[a] for a in env.possible_agents], dtype=np.int64)
+                reward_arr = np.array([rewards.get(a, 0.0) for a in env.possible_agents], dtype=np.float32)
+                done = not env.agents
+                memory.append((x, edge_index, alive_mask, act_list, reward_arr, next_x, next_ei, next_alive, done))
+
+                if len(memory) > MARLConfig.BATCH_SIZE and total_steps % 4 == 0:
+                    batch = random.sample(memory, MARLConfig.BATCH_SIZE)
+                    data_c, data_n, act_b, rew_b, m_b, mn_b, d_b = [], [], [], [], [], [], []
+                    for (bx, bei, bmask, ba, br, bnx, bnei, bnmask, bd) in batch:
+                        n_nodes = bx.shape[0]
+                        data_c.append(Data(x=torch.tensor(bx, dtype=torch.float32), edge_index=torch.tensor(bei, dtype=torch.long)))
+                        data_n.append(Data(x=torch.tensor(bnx, dtype=torch.float32), edge_index=torch.tensor(bnei, dtype=torch.long)))
+                        act_b.append(torch.tensor(ba, dtype=torch.long))
+                        rew_b.append(torch.tensor(br, dtype=torch.float32))
+                        m_b.append(torch.tensor(bmask, dtype=torch.bool))
+                        mn_b.append(torch.tensor(bnmask, dtype=torch.bool))
+                        d_b.append(torch.full((n_nodes,), float(bd), dtype=torch.float32))
+
+                    batch_c = PyGBatch.from_data_list(data_c).to(device_str)
+                    batch_n = PyGBatch.from_data_list(data_n).to(device_str)
+                    act_cat = torch.cat(act_b).to(device_str)
+                    rew_cat = torch.cat(rew_b).to(device_str)
+                    mask_cat = torch.cat(m_b).to(device_str)
+                    mask_n_cat = torch.cat(mn_b).to(device_str)
+                    done_cat = torch.cat(d_b).to(device_str)
+
+                    model.reset_memory()
+                    q_all = model.forward_batched(batch_c.x, batch_c.edge_index, batch_c.batch, mask_cat)
+                    q_a = q_all[torch.arange(q_all.size(0), device=device_str), act_cat]
+
+                    with torch.no_grad():
+                        target_model.reset_memory()
+                        q_next = target_model.forward_batched(batch_n.x, batch_n.edge_index, batch_n.batch, mask_n_cat).max(1)[0]
+                        target = rew_cat + MARLConfig.GAMMA * q_next * (1.0 - done_cat)
+
+                    active = mask_cat
+                    if torch.any(active):
+                        loss = torch.nn.functional.mse_loss(q_a[active], target[active])
+                        optimizer.zero_grad()
+                        loss.backward()
+                        optimizer.step()
+
+                if total_steps % MARLConfig.TARGET_UPDATE_FREQ == 0:
+                    target_model.load_state_dict(model.state_dict())
+            else:
                 next_obs_all = np.stack([next_obs[a] for a in env.possible_agents])
                 reward_arr = np.array([rewards.get(a, 0.0) for a in env.possible_agents])
                 done = not env.agents
@@ -160,7 +217,7 @@ def profile_algo(algo: str, episodes: int):
             # Bookkeeping
             t0 = time.perf_counter()
             if is_gnn:
-                x, edge_index, alive_mask = env.get_global_graph_state()
+                x, edge_index, alive_mask = next_x, next_ei, next_alive
             else:
                 obs_all = next_obs_all
             t_other += time.perf_counter() - t0
