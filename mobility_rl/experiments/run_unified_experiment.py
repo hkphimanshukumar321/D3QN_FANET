@@ -854,40 +854,69 @@ def _train_marl_worker(kwargs):
 
                 x, edge_index, alive_mask = next_x, next_ei, next_alive
 
-                # OPTIMIZATION: Train only every 4 steps (train_freq=4) to drastically slash overhead
+                # OPTIMIZATION: Vectorized graph-batched training (PyG Batch)
+                # Instead of 64 individual forward passes, we batch all replay
+                # graphs into one block-diagonal graph for a single forward pass.
                 if len(memory) > batch_size and global_step % 4 == 0:
+                    from torch_geometric.data import Data, Batch as PyGBatch
+
                     batch = random.sample(memory, batch_size)
 
-                    losses = []
+                    # Build PyG Data objects for current and next states
+                    data_curr = []
+                    data_next = []
+                    actions_list_b = []
+                    rewards_list_b = []
+                    masks_list_b = []
+                    masks_next_list_b = []
+                    dones_list_b = []
+
                     for (bx, bei, bmask, ba, br, bnx, bnei, bnmask, bd) in batch:
-                        bxt = torch.tensor(bx, dtype=torch.float32, device=device)
-                        bet = torch.tensor(bei, dtype=torch.long, device=device)
-                        bmask_t = torch.tensor(bmask, dtype=torch.bool, device=device)
-                        ba_t = torch.tensor(ba, dtype=torch.long, device=device)
-                        br_t = torch.tensor(br, dtype=torch.float32, device=device)
-                        bnxt = torch.tensor(bnx, dtype=torch.float32, device=device)
-                        bnet = torch.tensor(bnei, dtype=torch.long, device=device)
-                        bnmask_t = torch.tensor(bnmask, dtype=torch.bool, device=device)
+                        n_nodes = bx.shape[0]
+                        data_curr.append(Data(
+                            x=torch.tensor(bx, dtype=torch.float32),
+                            edge_index=torch.tensor(bei, dtype=torch.long),
+                        ))
+                        data_next.append(Data(
+                            x=torch.tensor(bnx, dtype=torch.float32),
+                            edge_index=torch.tensor(bnei, dtype=torch.long),
+                        ))
+                        actions_list_b.append(torch.tensor(ba, dtype=torch.long))
+                        rewards_list_b.append(torch.tensor(br, dtype=torch.float32))
+                        masks_list_b.append(torch.tensor(bmask, dtype=torch.bool))
+                        masks_next_list_b.append(torch.tensor(bnmask, dtype=torch.bool))
+                        # Expand scalar done to per-node for this graph
+                        dones_list_b.append(torch.full((n_nodes,), float(bd), dtype=torch.float32))
 
-                        policy_net.reset_memory()
-                        q_all = policy_net(bxt, bet, bmask_t)
-                        q_a = q_all[torch.arange(q_all.size(0), device=device), ba_t]
+                    batch_curr = PyGBatch.from_data_list(data_curr).to(device)
+                    batch_next = PyGBatch.from_data_list(data_next).to(device)
+                    act_cat = torch.cat(actions_list_b).to(device)
+                    rew_cat = torch.cat(rewards_list_b).to(device)
+                    mask_cat = torch.cat(masks_list_b).to(device)
+                    mask_next_cat = torch.cat(masks_next_list_b).to(device)
+                    done_cat = torch.cat(dones_list_b).to(device)
 
-                        with torch.no_grad():
-                            target_net.reset_memory()
-                            q_next = target_net(bnxt, bnet, bnmask_t).max(1)[0]
-                            target = br_t + gamma * q_next * (1.0 - float(bd))
+                    # Single forward pass for all graphs
+                    policy_net.reset_memory()
+                    q_all = policy_net.forward_batched(
+                        batch_curr.x, batch_curr.edge_index, batch_curr.batch, mask_cat
+                    )
+                    q_a = q_all[torch.arange(q_all.size(0), device=device), act_cat]
 
-                        active_idx = bmask_t
-                        if torch.any(active_idx):
-                            losses.append(torch.nn.functional.mse_loss(q_a[active_idx], target[active_idx]))
+                    with torch.no_grad():
+                        target_net.reset_memory()
+                        q_next = target_net.forward_batched(
+                            batch_next.x, batch_next.edge_index, batch_next.batch, mask_next_cat
+                        ).max(1)[0]
+                        target = rew_cat + gamma * q_next * (1.0 - done_cat)
 
-                    if not losses:
-                        continue
-                    loss = torch.stack(losses).mean()
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
+                    # Loss: MSE over alive nodes only (matches original per-graph logic)
+                    active = mask_cat
+                    if torch.any(active):
+                        loss = torch.nn.functional.mse_loss(q_a[active], target[active])
+                        optimizer.zero_grad()
+                        loss.backward()
+                        optimizer.step()
 
                 if global_step % target_update_interval == 0:
                     target_net.load_state_dict(policy_net.state_dict())

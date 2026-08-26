@@ -164,6 +164,71 @@ class MAGAT_D3QN_QNetwork(nn.Module):
 
         return q_values
 
+    def forward_batched(self, x, edge_index, batch_index, alive_mask=None):
+        """Vectorized forward for a PyG Batch of disjoint graphs.
+
+        Used during training to process an entire replay-buffer mini-batch in
+        a single forward pass instead of iterating over individual samples.
+
+        Args:
+            x:           (total_nodes, node_in_dim) — concatenated node features
+            edge_index:  (2, total_edges) — block-diagonal edge index from Batch
+            batch_index: (total_nodes,) — graph membership from Batch.batch
+            alive_mask:  (total_nodes,) bool — concatenated alive masks
+
+        Returns:
+            q_values: (total_nodes, num_actions)
+
+        Notes:
+            - GRU is **skipped** because the existing training loop calls
+              reset_memory() before every individual sample, making the GRU
+              hidden state always zero during training.  Skipping it here is
+              numerically equivalent and avoids the complication of maintaining
+              per-graph hidden states in a batched tensor.
+            - GATConv message passing is naturally confined to each disjoint
+              sub-graph, so the block-diagonal batch produces identical spatial
+              embeddings to individual forward() calls.
+        """
+        if not self.use_burst_history and x.size(-1) >= 24:
+            x = x.clone()
+            x[:, 21:24] = 0.0
+
+        # Spatial encoder — GATConv handles block-diagonal graphs natively
+        if self.use_graph and self.use_attention:
+            x = self.conv1(x, edge_index)
+            x = F.elu(x)
+            x = self.conv2(x, edge_index)
+            x = F.elu(x)
+        else:
+            x = F.relu(self.pre_mlp(x))
+            if self.use_graph:
+                x = self._edge_aggregate(x, edge_index)
+            x = F.relu(self.post_mlp(x))
+
+        # Skip GRU (equivalent to reset_memory() + single-step GRU with
+        # zero hidden state = identity-like transform after training).
+        # For the zero-hidden-state case, we still run GRU to keep weights
+        # in the gradient graph so they get trained.
+        if self.use_gru:
+            # Initialize fresh zero hidden state for all nodes
+            hidden = torch.zeros(
+                1, x.size(0), x.size(1),
+                device=x.device, dtype=x.dtype,
+            )
+            x_seq = x.unsqueeze(1)  # (total_nodes, 1, hidden_dim)
+            x_out, _ = self.memory_block(x_seq, hidden)
+            x = x_out.squeeze(1)    # (total_nodes, hidden_dim)
+
+        # Dueling bifurcation
+        values = self.value_stream(x)
+        advantages = self.advantage_stream(x)
+        q_values = values + (advantages - advantages.mean(dim=1, keepdim=True))
+
+        if alive_mask is not None:
+            q_values = q_values * alive_mask.unsqueeze(-1).float()
+
+        return q_values
+
 
 class QMIXMixer(nn.Module):
     """

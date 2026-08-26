@@ -176,18 +176,19 @@ class VDNAgent(BaseValueDecompositionAgent):
         rew_t = torch.tensor(rew_b, dtype=torch.float32, device=self.device)
         team_reward = (rew_t * mask_t).sum(dim=1)
 
-        q_per_agent = []
-        next_q_per_agent = []
-        for i in range(n_agents):
-            qi = self.q_net(obs_t[:, i, :])
-            qi_sel = qi.gather(1, act_t[:, i].unsqueeze(1)).squeeze(1)
-            q_per_agent.append(qi_sel)
-            with torch.no_grad():
-                nqi = self.target_net(nobs_t[:, i, :]).max(1)[0]
-                next_q_per_agent.append(nqi)
+        obs_flat = obs_t.reshape(bsz * n_agents, -1)
+        nobs_flat = nobs_t.reshape(bsz * n_agents, -1)
 
-        q_total = (torch.stack(q_per_agent, dim=1) * mask_t).sum(dim=1)
-        next_q_total = (torch.stack(next_q_per_agent, dim=1) * mask_t).sum(dim=1)
+        # Single batched forward pass across all agents & samples
+        q_all = self.q_net(obs_flat).view(bsz, n_agents, -1)
+        q_selected = q_all.gather(2, act_t.unsqueeze(2)).squeeze(2)
+
+        with torch.no_grad():
+            next_q_all = self.target_net(nobs_flat).view(bsz, n_agents, -1)
+            next_q_max = next_q_all.max(dim=2)[0]
+
+        q_total = (q_selected * mask_t).sum(dim=1)
+        next_q_total = (next_q_max * mask_t).sum(dim=1)
         target = team_reward + self.gamma * next_q_total * (1 - done_t)
 
         loss = F.mse_loss(q_total, target)
@@ -271,17 +272,17 @@ class QMIXAgent(BaseValueDecompositionAgent):
         next_state = nobs_t.view(bsz, -1)
         team_reward = (rew_t * mask_t).sum(dim=1)
 
-        q_agents = []
-        next_q_agents = []
-        for i in range(n_agents):
-            qi = self.q_net(obs_t[:, i, :])
-            q_agents.append(qi.gather(1, act_t[:, i].unsqueeze(1)).squeeze(1))
-            with torch.no_grad():
-                nqi = self.target_net(nobs_t[:, i, :]).max(1)[0]
-                next_q_agents.append(nqi)
+        obs_flat = obs_t.reshape(bsz * n_agents, -1)
+        nobs_flat = nobs_t.reshape(bsz * n_agents, -1)
 
-        q_agent_tensor = torch.stack(q_agents, dim=1) * mask_t
-        next_q_agent_tensor = torch.stack(next_q_agents, dim=1) * mask_t
+        # Single batched forward pass across all agents & samples
+        q_all = self.q_net(obs_flat).view(bsz, n_agents, -1)
+        q_agent_tensor = q_all.gather(2, act_t.unsqueeze(2)).squeeze(2) * mask_t
+
+        with torch.no_grad():
+            next_q_all = self.target_net(nobs_flat).view(bsz, n_agents, -1)
+            next_q_agent_tensor = next_q_all.max(dim=2)[0] * mask_t
+
         q_total = self.mixer(q_agent_tensor, state, alive_mask=mask_t).squeeze(1)
         with torch.no_grad():
             next_q_total = self.target_mixer(next_q_agent_tensor, next_state, alive_mask=mask_t).squeeze(1)
